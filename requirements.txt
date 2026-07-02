@@ -28,6 +28,7 @@ torchaudio
 librosa
 # export / edge
 onnx
+onnxscript                # required by torch>=2.9 onnx exporter
 onnxruntime
 onnxruntime-tools
 openvino                  # Intel laptops; swap for tensorrt on Jetson/RTX

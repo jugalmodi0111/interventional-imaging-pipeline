@@ -69,13 +69,13 @@ def distill(student, loader, epochs=200, lr=1e-3, alpha=0.5, T=2.0, device=None,
     use_amp = amp and device == "cuda"
     student.to(device).train()
     opt = torch.optim.AdamW(student.parameters(), lr=lr)
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     for ep in range(epochs):
         tot = 0.0
         for x, y, tl in loader:
             x, y, tl = x.to(device), y.to(device), tl.to(device)
             opt.zero_grad()
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast("cuda", enabled=use_amp):
                 loss = kd_loss(student(x), tl, y, alpha, T)
             scaler.scale(loss).backward(); scaler.step(opt); scaler.update()
             tot += loss.item()
