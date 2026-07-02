@@ -1,0 +1,9 @@
+task: catheter_guidewire_tracking
+datasets:
+  cathaction: {root: data/raw/cathaction, classes: [catheter, guidewire]}  # 25k masks
+detector: {name: yolo11n, imgsz: 640}
+tracker:  {name: bytetrack}
+alt:      {name: optical_flow_warp}                           # thin guidewire fallback
+train:    {epochs: 100, batch: 16, lr: 1.0e-3}
+metrics:  [iou, fps, id_switches]
+export:   {onnx: true, int8: true}

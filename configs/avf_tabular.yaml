@@ -1,0 +1,6 @@
+task: avf_patency_surveillance
+data: {csv: data/raw/avf_tabular/features.csv, target: occlusion}
+features: [dynamic_venous_pressure, dynamic_arterial_pressure, flow_rate, vessel_diameter, crp, ferritin]
+model: {name: lightgbm, num_leaves: 64, lr: 0.05, n_estimators: 500}
+explain: {shap: true}
+metrics: [auroc, precision, recall]

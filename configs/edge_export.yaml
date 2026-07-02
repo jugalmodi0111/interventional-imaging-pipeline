@@ -1,0 +1,20 @@
+# defaults for src/export/*
+# Two target families. This project's edge device = Apple silicon -> CoreML path.
+
+# Non-Apple targets (Intel laptop / Jetson): ONNX + INT8 (onnxruntime / openvino / tensorrt)
+onnx:  {opset: 17, dynamic_batch: true}
+int8:  {method: static_ptq, calib_images: 200}                # QAT fallback if Dice drops >3%
+
+# Apple-silicon target: CoreML + weight compression (coremltools.optimize)
+coreml:
+  compute_units: all              # CPU+GPU+ANE; benchmark with this, not cpuOnly
+  minimum_deployment_target: macOS13
+  convert_to: mlprogram           # required for coremltools.optimize
+  compress:
+    method: palettize             # data-free k-means LUT weight compression
+    nbits: 6                      # 6-bit; try 4 if size-critical, then RE-CHECK clDice
+    # method: linear              # alt: int8 linear_symmetric weight quant
+  # activation quant (optional, needs calib): linear_quantize_activations w/ ~200 imgs
+
+report: [params_M, flops_G, latency_ms, fps, peak_ram_mb, size_mb, dice_int8, cldice_int8]
+gate: {cldice_drop_max: 0.03}     # HARD gate: clDice drop after compression (coreml_validate.py)

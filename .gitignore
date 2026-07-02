@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+runs/
+data/raw/
+data/processed/
+*.onnx
+*.engine
+*.mlpackage
+*.pt
+*.pth
+.DS_Store

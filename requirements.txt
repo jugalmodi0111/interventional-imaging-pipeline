@@ -1,0 +1,38 @@
+# core
+torch>=2.2
+torchvision>=0.17
+numpy
+scipy
+pandas
+pyyaml
+tqdm
+opencv-python
+scikit-image
+scikit-learn
+# medical / seg
+monai>=1.3
+nnunetv2>=2.5
+SimpleITK
+# detection
+ultralytics>=8.2          # YOLOv8n / YOLO11n
+pycocotools
+# foundation / PEFT
+segment-anything
+peft>=0.11
+# tabular (AVF surveillance / TAVR risk)
+xgboost
+lightgbm
+shap
+# audio (AVF bruit)
+torchaudio
+librosa
+# export / edge
+onnx
+onnxruntime
+onnxruntime-tools
+openvino                  # Intel laptops; swap for tensorrt on Jetson/RTX
+coremltools               # Apple silicon
+# serving (Mac inference side; optional network API)
+fastapi
+uvicorn
+python-multipart

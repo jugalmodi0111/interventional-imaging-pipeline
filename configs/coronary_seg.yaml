@@ -1,0 +1,13 @@
+task: coronary_vessel_segmentation
+datasets:
+  arcade: {root: data/raw/arcade, task: 1, format: coco}      # 25 SYNTAX regions
+  dca1:   {root: data/raw/dca1,  format: nnunet}              # binary vessel masks
+  xcad:   {root: data/raw/xcad,  unlabeled: true}             # 1621 frames for SSL
+preprocess: {clahe: true, clip_limit: 2.0, tile: 8, unsharp: 0.5, size: 512}
+teacher:  {name: nnunetv2, config: 2d, preset: ResEncM, folds: 5}
+student:  {name: tiny_unet, base_ch: 16, depth: 4}            # ~2-3M params, edge
+distill:  {alpha: 0.5, temperature: 2.0, feature_kd: true}
+train:    {epochs: 200, batch: 8, lr: 1.0e-3, amp: true}
+metrics:  [dice, cldice, hd95]
+target:   {dice: 0.75}
+export:   {onnx: true, int8: true, coreml: true}

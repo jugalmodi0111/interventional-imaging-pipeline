@@ -1,0 +1,10 @@
+task: stenosis_detection
+datasets:
+  arcade_stenosis: {root: data/raw/arcade, task: 2, format: coco}
+  danilov:         {root: data/raw/danilov, format: coco}     # 8325 imgs
+model: {name: yolo11n, imgsz: 640, pretrained: true}          # nano = edge
+ssl:   {pseudo_label: true, conf: 0.4}                        # semi-supervised boost
+train: {epochs: 150, batch: 16, lr: 1.0e-3}
+metrics: [coco_ap, f1]
+target: {f1: 0.57}                                            # beat ARCADE leaderboard
+export: {onnx: true, int8: true, tensorrt: false}

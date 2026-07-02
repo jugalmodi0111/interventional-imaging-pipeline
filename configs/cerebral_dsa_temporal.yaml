@@ -1,0 +1,9 @@
+task: cerebral_dsa_segmentation
+datasets:
+  dias: {root: data/raw/dias, format: nnunet, weak: scribble}
+  dsca: {root: data/raw/dsca, format: sequence}               # 224 seq / 1792 img
+teacher: {name: dsanet}                                       # Dice ~0.9033 ceiling
+student: {name: keyframe2d_convlstm, base_ch: 16, frames: 4, use_minip: true}
+train: {epochs: 150, batch: 4, lr: 5.0e-4}
+metrics: [dice, cldice]
+export: {onnx: true, dynamic_axes: true}

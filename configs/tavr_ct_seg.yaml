@@ -1,0 +1,11 @@
+task: tavr_aortic_complex_segmentation
+note: OFFLINE workstation/GPU job - not an edge model (3D CT).
+datasets:
+  mmwhs: {root: data/raw/mmwhs}                               # whole-heart proxy
+  sega:  {root: data/raw/sega}                                # aorta proxy
+  institutional: {root: data/raw/tavr_ct, domain_adapt: true}
+model: {name: nnunetv2, config: 3d_fullres}                   # or swinunetr
+structures: [aortic_root, annulus, sinus_valsalva, sinotubular_jn, coronary_ostia]
+measurements: 22                                              # TAVI-PREP style
+metrics: [icc_vs_expert, annulus_perimeter_err, ostia_height_err]
+export: {torchscript: true}                                   # batch, not edge

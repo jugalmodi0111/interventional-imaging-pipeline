@@ -1,0 +1,9 @@
+task: avf_bruit_screening
+data: {root: data/raw/avf_audio, sr: 4000, clip_sec: 15}      # institutional, IRB
+features: {type: mel_spectrogram, n_mels: 128}
+model: {name: small_vit, patch: 16, dim: 192, depth: 6}       # tiny; wearable/phone
+alt:   {name: cnn_bilstm}
+train: {epochs: 100, batch: 32, lr: 3.0e-4}
+metrics: [sensitivity, specificity, auroc, f1]
+labels_from: duplex_ultrasound
+export: {onnx: true, tflite: true}
