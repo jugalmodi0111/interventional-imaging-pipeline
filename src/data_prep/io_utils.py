@@ -47,10 +47,13 @@ def write_nnunet_datasetjson(raw_dir, n, channel="XCA"):
 
 
 def resolve_image(root, file_name):
-    p = os.path.join(root, file_name)
-    if os.path.exists(p):
-        return p
-    hits = glob.glob(os.path.join(root, "**", os.path.basename(file_name)), recursive=True)
+    fn = os.path.basename(file_name)
+    # fast paths: COCO json usually sits in .../annotations, images in a sibling .../images
+    for cand in (os.path.join(root, file_name), os.path.join(root, fn),
+                 os.path.join(root, "..", "images", fn), os.path.join(root, "images", fn)):
+        if os.path.exists(cand):
+            return cand
+    hits = glob.glob(os.path.join(root, "**", fn), recursive=True)   # fallback (slow)
     return hits[0] if hits else None
 
 

@@ -1,6 +1,6 @@
 task: stenosis_detection
 datasets:
-  arcade_stenosis: {root: data/raw/arcade, task: 2, format: coco}
+  arcade_stenosis: {root: data/raw/arcade/stenosis, task: 2, format: coco}   # stenosis split only
   danilov:         {root: data/raw/danilov, format: coco}     # 8325 imgs
 model: {name: yolo11n, imgsz: 640, pretrained: true}          # nano = edge
 ssl:   {pseudo_label: true, conf: 0.4}                        # semi-supervised boost

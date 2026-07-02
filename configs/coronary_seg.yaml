@@ -1,6 +1,6 @@
 task: coronary_vessel_segmentation
 datasets:
-  arcade: {root: data/raw/arcade, task: 1, format: coco}      # 25 SYNTAX regions
+  arcade: {root: data/raw/arcade/syntax, task: 1, format: coco}   # SYNTAX seg split only (not stenosis/)
   dca1:   {root: data/raw/dca1,  format: nnunet}              # binary vessel masks
   xcad:   {root: data/raw/xcad,  unlabeled: true}             # 1621 frames for SSL
 preprocess: {clahe: true, clip_limit: 2.0, tile: 8, unsharp: 0.5, size: 512}
