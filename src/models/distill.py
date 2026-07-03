@@ -44,12 +44,17 @@ class TeacherCacheDataset(Dataset):
         for ext in (".npy", ".npz"):
             p = os.path.join(self.cache, stem + ext)
             if os.path.exists(p):
-                arr = np.load(p)
-                arr = arr["probabilities"] if ext == ".npz" else arr
-                fg = arr[1] if (arr.ndim == 3 and arr.shape[0] >= 2) else np.squeeze(arr)
+                arr = np.asarray(np.load(p)["probabilities"] if ext == ".npz" else np.load(p))
+                # nnU-Net 2D saves probs channel-first, often (C, 1, H, W). Take the foreground
+                # channel then squeeze to a STRICT 2D (H,W) BEFORE resize (else cv2 misreads the
+                # extra axis as channels and explodes the tensor -> 32 GB OOM in kd_loss).
+                fg = arr[1] if arr.shape[0] >= 2 else arr[0]
+                fg = np.squeeze(fg).astype(np.float32)
+                if fg.ndim != 2:
+                    fg = fg.reshape(fg.shape[-2], fg.shape[-1])
                 fg = np.clip(fg, 1e-6, 1 - 1e-6)
                 logit = np.log(fg / (1 - fg))             # prob -> logit for sigmoid-KD
-                return self.cv2.resize(logit.astype(np.float32), (W, H))
+                return self.cv2.resize(logit, (W, H))
         raise FileNotFoundError(f"teacher logits for {stem!r} not in {self.cache}")
 
     def __getitem__(self, i):
