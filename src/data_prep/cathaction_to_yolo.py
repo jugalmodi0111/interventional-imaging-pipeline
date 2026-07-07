@@ -6,6 +6,7 @@ Confirm your CathAction download layout and adjust `_mask_dirs` if the folder na
 """
 import argparse, glob, os, yaml
 import cv2
+import numpy as np
 from src.data_prep import io_utils as io
 
 OUT = "data/processed/catheter"
@@ -44,13 +45,46 @@ def _from_masks(root, size):
     return n
 
 
+def _from_img_mask_pairs(root, size):
+    """CathAction human_dataset_train layout: <root>/**/img/<stem>.<ext> +
+    <root>/**/mask/<stem>_mask.png (one merged mask per frame, NOT per-class dirs).
+    If a mask carries >1 distinct nonzero value we split those into classes; otherwise all
+    foreground -> class 0. Returns frames converted."""
+    img_dirs  = [d for d in glob.glob(os.path.join(root, "**", "img"),  recursive=True) if os.path.isdir(d)]
+    mask_dirs = [d for d in glob.glob(os.path.join(root, "**", "mask"), recursive=True) if os.path.isdir(d)]
+    if not img_dirs or not mask_dirs:
+        return 0
+    img_dir, mask_dir = img_dirs[0], mask_dirs[0]
+    imgs = {os.path.splitext(os.path.basename(p))[0]: p for p in glob.glob(os.path.join(img_dir, "*"))}
+    n = 0
+    for mp in glob.glob(os.path.join(mask_dir, "*")):
+        stem = os.path.splitext(os.path.basename(mp))[0]
+        if stem.endswith("_mask"):
+            stem = stem[:-len("_mask")]                          # mask files are <stem>_mask.png
+        ip = imgs.get(stem)
+        if not ip:
+            continue
+        m = cv2.imread(mp, cv2.IMREAD_GRAYSCALE)
+        if m is None:
+            continue
+        vals = [int(v) for v in np.unique(m) if v != 0]
+        if 1 < len(vals) <= len(NAMES):                          # e.g. catheter=1, guidewire=2
+            class_masks = [(i, (m == v).astype("uint8")) for i, v in enumerate(sorted(vals))]
+        else:                                                    # single merged mask -> class 0
+            class_masks = [(0, (m > 0).astype("uint8"))]
+        n += io.masks_to_yolo(ip, class_masks, OUT, size)
+    return n
+
+
 def main(cfg):
     root = cfg["datasets"]["cathaction"]["root"]
     size = cfg.get("detector", {}).get("imgsz", 640)
     cmap = {i + 1: i for i in range(len(NAMES))}                 # COCO cat ids 1..N -> 0..N-1
     n = io.coco_to_yolo(root, OUT, size=size, class_map=cmap)    # COCO path if present
     if n == 0:
-        n = _from_masks(root, size)                             # mask fallback
+        n = _from_masks(root, size)                             # per-class mask dirs
+    if n == 0:
+        n = _from_img_mask_pairs(root, size)                   # img/ + mask/ single-mask layout
     if n == 0:
         raise SystemExit(f"No CathAction annotations converted under {root!r}. Check layout.")
     yml = io.write_yolo_datayaml(OUT, names=NAMES)
