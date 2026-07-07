@@ -16,7 +16,8 @@ def _data_yaml(cfg):
     return f"data/processed/{sub}/data.yaml"
 
 
-def train(cfg, project=None, data_yaml=None):
+def train(cfg, project=None, data_yaml=None, device=0):
+    # device=0 forces GPU (fails loud if none); pass 'cpu' to override.
     from ultralytics import YOLO
     m = _detector(cfg)
     tr = cfg.get("train", {})
@@ -25,18 +26,18 @@ def train(cfg, project=None, data_yaml=None):
     model = YOLO(m["name"] + ".pt")
     model.train(data=data_yaml, imgsz=m.get("imgsz", 640),
                 epochs=tr.get("epochs", 100), batch=tr.get("batch", 16),
-                lr0=tr.get("lr", 1e-3), project=project, name="base", exist_ok=True)
+                lr0=tr.get("lr", 1e-3), project=project, name="base", exist_ok=True, device=device)
     best = os.path.join(project, "base", "weights", "best.pt")
 
     if cfg.get("ssl", {}).get("pseudo_label"):
-        best = _pseudo_label_round(best, cfg, project, data_yaml)
+        best = _pseudo_label_round(best, cfg, project, data_yaml, device=device)
 
-    val = YOLO(best).val(data=data_yaml)
+    val = YOLO(best).val(data=data_yaml, device=device)
     print("best:", best, "| mAP50:", round(float(val.box.map50), 4))
     return best
 
 
-def _pseudo_label_round(weights, cfg, project, data_yaml, unlabeled_dir="data/raw/xcad"):
+def _pseudo_label_round(weights, cfg, project, data_yaml, unlabeled_dir="data/raw/xcad", device=0):
     """Predict on unlabeled frames >= conf, write YOLO pseudo-labels into the train split, retrain."""
     from ultralytics import YOLO
     conf = cfg["ssl"].get("conf", 0.4)
@@ -50,7 +51,7 @@ def _pseudo_label_round(weights, cfg, project, data_yaml, unlabeled_dir="data/ra
     out_l = os.path.join(proc, "labels/train")
     os.makedirs(out_i, exist_ok=True); os.makedirs(out_l, exist_ok=True)
     kept = 0
-    for res in model.predict(imgs, conf=conf, stream=True, verbose=False):
+    for res in model.predict(imgs, conf=conf, stream=True, verbose=False, device=device):
         b = res.boxes
         if b is None or len(b) == 0:
             continue
@@ -65,7 +66,7 @@ def _pseudo_label_round(weights, cfg, project, data_yaml, unlabeled_dir="data/ra
     model = YOLO(m["name"] + ".pt")
     model.train(data=data_yaml, imgsz=m.get("imgsz", 640), epochs=tr.get("epochs", 100),
                 batch=tr.get("batch", 16), lr0=tr.get("lr", 1e-3),
-                project=project, name="ssl", exist_ok=True)
+                project=project, name="ssl", exist_ok=True, device=device)
     return os.path.join(project, "ssl", "weights", "best.pt")
 
 

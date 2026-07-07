@@ -9,14 +9,15 @@ Reports fps + ID switches (the metric that matters for guidewire continuity) and
 import argparse, os
 
 
-def track_yolo(weights, source, out=None, conf=0.25, tracker="bytetrack.yaml"):
-    """Dev-path tracking with Ultralytics' built-in ByteTrack. Returns (n_frames, n_ids)."""
+def track_yolo(weights, source, out=None, conf=0.25, tracker="bytetrack.yaml", device=0):
+    """Dev-path tracking with Ultralytics' built-in ByteTrack. Returns (n_frames, n_ids).
+    device=0 forces GPU (fails loud if none); pass 'cpu' to override."""
     from ultralytics import YOLO
     from src.eval.audit import record
     model = YOLO(weights)
     ids, n = set(), 0
     writer = None
-    for res in model.track(source=source, conf=conf, tracker=tracker, stream=True, persist=True, verbose=False):
+    for res in model.track(source=source, conf=conf, tracker=tracker, stream=True, persist=True, verbose=False, device=device):
         n += 1
         if res.boxes is not None and res.boxes.id is not None:
             ids.update(int(i) for i in res.boxes.id.tolist())
@@ -40,5 +41,6 @@ if __name__ == "__main__":
     ap.add_argument("--weights", required=True, help="catheter detector .pt (dev) ")
     ap.add_argument("--source", required=True, help="video | image dir")
     ap.add_argument("--out"); ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--device", default=0, help="0 = GPU (default), 'cpu' to override")
     a = ap.parse_args()
-    track_yolo(a.weights, a.source, out=a.out, conf=a.conf)
+    track_yolo(a.weights, a.source, out=a.out, conf=a.conf, device=a.device)
