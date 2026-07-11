@@ -21,6 +21,19 @@ def _find_img(root, stem):
     return None
 
 
+def _index_images(root):
+    """One os.walk -> {basename: path, stem: path} for O(1) image lookup.
+    Avoids a per-annotation recursive glob (O(n*files)) that stalls on Danilov's flat dataset/ dir."""
+    idx = {}
+    for dp, _, files in os.walk(root):
+        for f in files:
+            if os.path.splitext(f)[1].lower() in _IMG_EXTS:
+                full = os.path.join(dp, f)
+                idx.setdefault(f, full)
+                idx.setdefault(os.path.splitext(f)[0], full)
+    return idx
+
+
 def _voc_box(obj, W, H):
     b = obj.find("bndbox")
     x1, y1 = float(b.findtext("xmin")), float(b.findtext("ymin"))
@@ -32,6 +45,7 @@ def _danilov_native(root, out_dir, size):
     """Danilov (Mendeley ydrm75xywg) ships boxes as Pascal-VOC XML or YOLO .txt. Map all
     severity classes (small/medium/large) -> single 'stenosis' class 0. Returns count."""
     n = 0
+    imgidx = _index_images(root)   # build once; O(1) lookups below
     # (1) Pascal-VOC XML
     for xp in glob.glob(os.path.join(root, "**", "*.xml"), recursive=True):
         try:
@@ -39,8 +53,8 @@ def _danilov_native(root, out_dir, size):
         except Exception:
             continue
         fn = t.findtext("filename")
-        ip = (io.resolve_image(root, fn) if fn else None) or \
-             _find_img(root, os.path.splitext(os.path.basename(xp))[0])
+        ip = (imgidx.get(os.path.basename(fn)) if fn else None) or \
+             imgidx.get(os.path.splitext(os.path.basename(xp))[0])
         if not ip:
             continue
         g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
@@ -62,7 +76,7 @@ def _danilov_native(root, out_dir, size):
         if os.path.basename(tp) in ("classes.txt", "data.txt"):
             continue
         stem = os.path.splitext(os.path.basename(tp))[0]
-        ip = _find_img(root, stem)
+        ip = imgidx.get(stem)
         if not ip:
             continue
         g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
