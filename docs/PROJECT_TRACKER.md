@@ -101,7 +101,9 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 - [x] `stenosis_yolo.yaml` config present
 - [x] **Speed knobs** (2026-07-11): `train_kwargs` threads cache/workers/patience/amp into every `model.train`; config carries fast defaults; notebook enables cuDNN autotune — quality-neutral
 - [x] **GD cold-start seed** wired (opt-in `ssl.seed: gdino`) — see Grounding DINO Slot 2
-- [ ] Run `notebooks/colab_stenosis_build.ipynb` (YOLOv8s/YOLO11n) on GPU
+- [x] **First real run done** (2026-07-11, Kaggle): `arcade_yolo11n_640_e150`, ARCADE-only → **F1 0.246, mAP50 0.147 — below floor 0.57.** Verified learning (not a bug): clean labels, preds land on vessels but miss many. Archived: [`experiments/stenosis_arcade_yolo11n_640_e150/`](../experiments/stenosis_arcade_yolo11n_640_e150/RESULTS.md)
+- [ ] **Cross the floor** — next run `arcade+danilov_yolo11s_768_e150`: +Danilov (~9.8k imgs), YOLO11n→11s, imgsz 640→768, enable SSL
+- [ ] Run naming: `run_tag(cfg)` auto-names each run folder (no clobber); Kaggle notebook wired
 - [ ] Pseudo-label SSL round on unlabeled frames (raise recall)
 - [ ] Track COCO AP/AR on Danilov
 - [ ] Export to CoreML (`yolo_to_coreml.py`) + edge bench on Mac
@@ -205,6 +207,7 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 ---
 
 ## 8. Changelog
-- **2026-07-11 (c)** — GD Slot 2 wired: `ssl.seed: gdino` cold-start in `train_detector.py` (`_gdino_seed_round` + pure helpers `ssl_seed`/`seed_prompt_and_classes`/`boxes_labels_to_yolo_lines`). Detector speed knobs (`train_kwargs`: cache/workers/patience/amp) threaded into all `model.train` calls; stenosis+catheter configs updated; `colab_stenosis_build.ipynb` enables cuDNN autotune + surfaces the knobs — quality-neutral. Tests 39→**45 passing**, still torch-free.
+- **2026-07-11 (d)** — First real stenosis run (Kaggle): `arcade_yolo11n_640_e150`, ARCADE-only → F1 0.246 / mAP50 0.147, **below floor** (learning confirmed via val previews, not a bug). Added `run_tag(cfg)` (auto run-naming, TDD) + wired Kaggle notebook to use it. Archived run to `experiments/stenosis_arcade_yolo11n_640_e150/` (+ RESULTS.md). Tests 45→**47 passing**. Next: `arcade+danilov_yolo11s_768_e150`.
+- **2026-07-11 (c)** — GD Slot 2 wired: `ssl.seed: gdino` cold-start in `train_detector.py` (`_gdino_seed_round` + pure helpers `ssl_seed`/`seed_prompt_and_classes`/`boxes_labels_to_yolo_lines`). Detector speed knobs (`train_kwargs`: cache/workers/patience/amp) threaded into all `model.train` calls; stenosis+catheter configs updated. Notebook speedups (cuDNN autotune + surfaced knobs + GD-seed note) applied to **`colab_stenosis_build.ipynb`** and both **Kaggle** builds (`kaggle_coronary_build.ipynb` cuDNN; `kaggle_stenosis_build.ipynb` cuDNN + gdino toggle) — all quality-neutral. Tests 39→**45 passing**, still torch-free.
 - **2026-07-11 (b)** — Implemented (local, TDD, 39 tests passing): `preprocess.process_dir` CLAHE walk; `train_seg.py` coronary driver (unblocks Stage 1); `autolabel_gdino.py` + `grounded_sam.py` (Grounding DINO labeler, Slot 1). All new modules import torch-free. Stage 1 `!`→`~`; GD `[ ]`→`~`.
 - **2026-07-11 (a)** — Tracker created. Snapshot: Stage 3 catheter done; Stage 1 blocked on stubbed `train_seg.py`; Stage 2 ready-to-run; Grounding DINO workstream added.

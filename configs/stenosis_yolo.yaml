@@ -2,7 +2,8 @@ task: stenosis_detection
 datasets:
   arcade_stenosis: {root: data/raw/arcade/stenosis, task: 2, format: coco}   # stenosis split only
   danilov:         {root: data/raw/danilov, format: coco}     # 8325 imgs
-model: {name: yolo11n, imgsz: 640, pretrained: true}          # nano = edge
+model: {name: yolo11s, imgsz: 768, pretrained: true}          # 's' + 768: cross the F1 floor (nano/640 sat at 0.25). Still edge-deployable.
+# if T4 OOMs at 768/batch16: drop train.batch to 8 (or set -1 for auto).
 ssl:   {pseudo_label: true, conf: 0.4}                        # semi-supervised boost
 # ssl.seed: gdino  -> open-vocab Grounding DINO cold-start on unlabeled frames before self-training
 #                    (needs transformers + a GPU; set ssl.unlabeled_dir to point at the frames)

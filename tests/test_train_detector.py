@@ -1,7 +1,19 @@
 """Detector trainer: SSL seed selection (Grounding DINO cold-start) + speed/train kwargs."""
 from src.train.train_detector import (
-    ssl_seed, seed_prompt_and_classes, boxes_labels_to_yolo_lines, train_kwargs,
+    ssl_seed, seed_prompt_and_classes, boxes_labels_to_yolo_lines, train_kwargs, run_tag,
 )
+
+
+def test_run_tag_arcade_only_nano():
+    cfg = {"datasets": {"arcade_stenosis": {}},
+           "model": {"name": "yolo11n", "imgsz": 640}, "train": {"epochs": 150}}
+    assert run_tag(cfg) == "arcade_yolo11n_640_e150"
+
+
+def test_run_tag_arcade_plus_danilov_s768():
+    cfg = {"datasets": {"arcade_stenosis": {}, "danilov": {}},
+           "model": {"name": "yolo11s", "imgsz": 768}, "train": {"epochs": 150}}
+    assert run_tag(cfg) == "arcade+danilov_yolo11s_768_e150"
 
 
 def test_ssl_seed_reads_cfg():

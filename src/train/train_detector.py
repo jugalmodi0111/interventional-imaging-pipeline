@@ -51,6 +51,15 @@ def boxes_labels_to_yolo_lines(boxes_xyxy, labels, class_map, W, H):
     return lines
 
 
+def run_tag(cfg):
+    """Stable run name encoding data+model+imgsz+epochs, e.g. 'arcade_yolo11n_640_e150'.
+    Use it as the ultralytics run folder so different configs don't clobber each other's outputs."""
+    m = _detector(cfg) or {}
+    names = [k.replace("_stenosis", "").replace("_detection", "") for k in cfg.get("datasets", {})]
+    data = "+".join(sorted(names)) or "data"
+    return f"{data}_{m.get('name', 'yolo')}_{m.get('imgsz', 640)}_e{cfg.get('train', {}).get('epochs', 100)}"
+
+
 def train_kwargs(cfg):
     """Ultralytics train() kwargs incl. speed knobs. Fast, quality-neutral defaults:
     cache (RAM/disk dataset cache), amp (mixed precision), and patience (early-stop once the
