@@ -10,6 +10,16 @@ from src.data_prep import io_utils as io
 
 OUT = "data/processed/stenosis"
 
+_IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")   # Danilov ships .bmp
+
+
+def _find_img(root, stem):
+    for e in _IMG_EXTS:
+        p = io.resolve_image(root, stem + e)
+        if p:
+            return p
+    return None
+
 
 def _voc_box(obj, W, H):
     b = obj.find("bndbox")
@@ -28,8 +38,9 @@ def _danilov_native(root, out_dir, size):
             t = ET.parse(xp).getroot()
         except Exception:
             continue
-        fn = t.findtext("filename") or os.path.basename(xp).replace(".xml", ".png")
-        ip = io.resolve_image(root, fn)
+        fn = t.findtext("filename")
+        ip = (io.resolve_image(root, fn) if fn else None) or \
+             _find_img(root, os.path.splitext(os.path.basename(xp))[0])
         if not ip:
             continue
         g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
@@ -51,7 +62,7 @@ def _danilov_native(root, out_dir, size):
         if os.path.basename(tp) in ("classes.txt", "data.txt"):
             continue
         stem = os.path.splitext(os.path.basename(tp))[0]
-        ip = io.resolve_image(root, stem + ".png") or io.resolve_image(root, stem + ".jpg")
+        ip = _find_img(root, stem)
         if not ip:
             continue
         g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
