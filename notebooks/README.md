@@ -22,7 +22,7 @@ best = train(cfg, project=f"{E['runs']}/stenosis")
 | Notebook | Stage | Imports | GPU |
 |---|---|---|---|
 | `colab_coronary_build.ipynb` | 1 — coronary seg | nnU-Net teacher + `src.models.distill` | yes |
-| `colab_stenosis_build.ipynb` | 2 — stenosis det | `src.train.train_detector` | yes |
+| `kaggle_stenosis_plug_and_play.ipynb` | 2 — stenosis det (ARCADE+Danilov, yolo11s/768) | `src.train.train_detector` | yes |
 
 ## Colab vs Kaggle
 `src/env.py::setup()` handles both:

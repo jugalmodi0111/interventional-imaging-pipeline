@@ -198,7 +198,7 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 *Done 2026-07-11 (code-side, local, TDD): `preprocess.process_dir`; `train_seg.py` driver; `autolabel_gdino.py` + `grounded_sam.py`; GD Slot-2 SSL-seed wiring + detector speed knobs + notebook speedup. 45 tests passing. Remaining queue is GPU-run + wiring:*
 
 1. **[Stage 1 — coronary]** Run `colab_coronary_build.ipynb` on Colab GPU — driver is ready; this is the first real training run. → Dice ≥ 0.75 + clDice.
-2. **[Stage 2 — stenosis]** Run the (now faster) `colab_stenosis_build.ipynb` on GPU. → F1 ≥ 0.55 recall-weighted. Optionally flip `ssl.seed: gdino` for the open-vocab cold start.
+2. **[Stage 2 — stenosis]** Run `kaggle_stenosis_plug_and_play.ipynb` on Kaggle GPU (ARCADE + Danilov, yolo11s/768). → F1 ≥ 0.55 recall-weighted. Optionally flip `ssl.seed: gdino` for the open-vocab cold start.
 3. **[Stage 1 refinement]** Extend `qualifies()` to require clDice within ~3% of teacher (not Dice-only).
 4. **[Stage 3 close-out]** Record catheter IoU/fps/ID-switch on device; export catheter → CoreML.
 5. **[Stage 2.5]** Finish `calibration.py` (reliability + temp-scaling + OOD) once ≥1 seg/det model exists to score.
