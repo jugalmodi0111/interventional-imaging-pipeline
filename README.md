@@ -67,6 +67,7 @@ make bench-coreml    MODEL=runs/coronary/student.mlpackage
 *before* edge optimization, calibration + cross-vendor *before* sign-off.
 
 ## Docs
+- [`docs/PROJECT_TRACKER.md`](docs/PROJECT_TRACKER.md) — **live status + checklist**: what's done, what's next, per-stage gates
 - [`docs/Model_Pipeline_Playbook.md`](docs/Model_Pipeline_Playbook.md) — rationale + model choices
 - [`docs/DATASETS.md`](docs/DATASETS.md) — what to download, links, usage
 - [`docs/DATASET_VALIDATION.md`](docs/DATASET_VALIDATION.md) — fact-check of dataset claims

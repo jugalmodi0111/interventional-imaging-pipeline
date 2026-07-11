@@ -4,6 +4,7 @@ datasets:
 detector: {name: yolo11n, imgsz: 640}
 tracker:  {name: bytetrack}
 alt:      {name: optical_flow_warp}                           # thin guidewire fallback
-train:    {epochs: 100, batch: 16, lr: 1.0e-3}
+train:    {epochs: 100, batch: 16, lr: 1.0e-3,
+           cache: true, workers: 8, patience: 30, amp: true}  # speed: RAM cache + AMP + early-stop (quality-neutral)
 metrics:  [iou, fps, id_switches]
 export:   {onnx: true, int8: true}

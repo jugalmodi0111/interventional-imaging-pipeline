@@ -41,6 +41,8 @@ train-catheter:
 	$(PY) -m src.train.train_detector --config configs/catheter_track.yaml
 track:                    # WEIGHTS=runs/catheter/.../best.pt SOURCE=clip.mp4
 	$(PY) -m src.serve.track --weights $(WEIGHTS) --source $(SOURCE)
+track-eval:               # WEIGHTS=best.pt SOURCE=data/raw/cathaction/img  (many clips -> per-clip fps + fragmentation)
+	$(PY) -m src.serve.track --weights $(WEIGHTS) --source $(SOURCE) --per-clip --device cpu
 
 # --- Inference (Mac): per-frame overlay + audit trail ---
 realtime:                 # MODEL=...mlpackage TASK=seg|det SOURCE=clip.mp4|frames/|camera
