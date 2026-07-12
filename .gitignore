@@ -10,3 +10,7 @@ data/processed/
 *.pt
 *.pth
 .DS_Store
+
+# Kaggle API output dumps (weights unpack as extensionless shards; keep out of git)
+outputs/output_stenosis/
+outputs/**/best-stenosis/
