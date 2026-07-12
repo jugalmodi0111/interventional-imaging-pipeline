@@ -13,7 +13,7 @@ Two eval modes:
                 Unique-ID count over the raw concatenation is invalid (every clip cut mints new
                 IDs); per-clip is the only honest signal.
 """
-import argparse, os, re, time
+import argparse, os, re
 from collections import defaultdict
 
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")

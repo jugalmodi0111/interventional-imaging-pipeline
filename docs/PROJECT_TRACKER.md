@@ -1,7 +1,7 @@
 # Project Tracker — Interventional Imaging Pipeline
 
 **Purpose:** single source of truth for *what is done* and *what is next*. Check boxes as you go.
-**Last updated:** 2026-07-11 · **Owner:** tech@manufex.io
+**Last updated:** 2026-07-12 · **Owner:** tech@manufex.io
 **Companion docs:** [`Model_Pipeline_Playbook.md`](Model_Pipeline_Playbook.md) (rationale) · [`DATASETS.md`](DATASETS.md) · [`COLAB_MAC_SPLIT.md`](COLAB_MAC_SPLIT.md) · repo [`README.md`](../README.md)
 
 ---
@@ -15,12 +15,12 @@
 
 ---
 
-## 1. Status snapshot (2026-07-11)
+## 1. Status snapshot (2026-07-12)
 
 | Stage | Title | State | Trained artifact | Gate status |
 |---|---|---|---|---|
 | 0 | Setup + data prep | `~` partial | — | CLAHE walk **done**; edge-bench torch path still TODO |
-| 1 | Coronary segmentation | `~` ready-to-run | none | **train driver implemented** (2026-07-11); needs Colab GPU run |
+| 1 | Coronary segmentation | `~` trained; gate unverified | `student.pt`+onnx+int8 (2026-07-12) | driver ran, artifacts in `outputs/coronary_student/`; **Dice/clDice NOT recorded — verify gate** |
 | 2 | Stenosis detection | `~` ready-to-run | none | data on disk, trainer coded, not run |
 | 2.5 | Calibration + abstention | `~` partial | — | ECE coded; reliability/temp-scale/OOD are TODO |
 | 3 | Temporal + catheter tracking | `x` **done** | `best-catheter.pt` + 4 provenance zips | detection+track complete |
@@ -29,7 +29,7 @@
 | 5 | Regulatory / intended-use gate | `[ ]` not started | — | name before any non-research use |
 | GD | **Grounding DINO labeler** (new) | `~` scaffolded | — | modules + pure helpers done (2026-07-11); SSL-seed wiring pending |
 
-**One-line summary:** Stage 3 (catheter) trained end-to-end. Stage 1 (coronary) driver is now **implemented** (was the blocker) — ready for its Colab GPU run. Stage 2 (stenosis) has data + code ready. Grounding DINO labeler is scaffolded (modules import torch-free, pure helpers unit-tested). Local test suite: **39 passing** (`pytest tests/`).
+**One-line summary:** Stage 3 (catheter) trained end-to-end. Stage 1 (coronary) driver **ran** — `student.pt`+onnx+int8 exist in `outputs/coronary_student/` (2026-07-12), but **Dice/clDice were not logged; the accuracy-floor gate is unverified**. Stage 2 (stenosis) has data + code ready; honest patient-grouped re-run still pending. Grounding DINO labeler is scaffolded (modules import torch-free, pure helpers unit-tested). Local test suite: **52 passing** (`pytest tests/`).
 
 ---
 
@@ -49,7 +49,7 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 - [x] `src/train/train_seg.py` (2026-07-11) — coronary teacher→distill→eval→export driver + pure config helpers
 - [x] `src/data_prep/autolabel_gdino.py` (2026-07-11) — Grounding DINO auto-labeler (pure box→YOLO/COCO helpers + lazy `detect`/`autolabel_dir`)
 - [x] `src/models/grounded_sam.py` (2026-07-11) — DINO box → SAM mask (box-prompted), `to_seg_pairs`
-- [x] `tests/` — `test_preprocess.py`, `test_train_seg.py`, `test_autolabel_gdino.py`, `test_train_detector.py` → **45 passing**, all import torch-free
+- [x] `tests/` — `test_preprocess.py`, `test_train_seg.py`, `test_autolabel_gdino.py`, `test_train_detector.py`, `test_split_grouping.py` → **52 passing**, all import torch-free
 - [x] `src/models/seg_student.py` (46) — TinyU-Net student
 - [x] `src/models/distill.py` (94) — KD loss + distillation loop
 - [x] `src/train/train_detector.py` — YOLO11n trainer + pseudo-label SSL + **GD cold-start seed** + speed knobs (`train_kwargs`); pure helpers unit-tested (2026-07-11)
@@ -61,7 +61,7 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 ### Stubs / partial (must implement before their stage can pass)
 - [x] ~~`src/train/train_seg.py`~~ — **implemented 2026-07-11** (was `NotImplementedError`). No longer blocks Stage 1.
 - [x] ~~`src/data_prep/preprocess.py` walk~~ — **`process_dir()` implemented 2026-07-11**.
-- [~] `src/models/sam_adapter.py` (5) — still `NotImplementedError`, but **superseded** by `src/models/grounded_sam.py` (Grounded-SAM path, 2026-07-11). Delete or leave as legacy.
+- [x] ~~`src/models/sam_adapter.py`~~ — **deleted 2026-07-12** (dead `NotImplementedError` stub, 0 callers; superseded by `src/models/grounded_sam.py`).
 - [!] `src/data_prep/dsca_sequences.py` (11) — `NotImplementedError`. DSA temporal prep. Blocks Stage 3 DSA.
 - [!] `src/train/train_audio.py` (8) — `NotImplementedError`. AVF audio (mel → ViT). Blocks Stage 4 audio.
 - [~] `src/eval/calibration.py` (41) — `ece()` implemented; **TODO:** reliability diagram, temperature scaling, OOD-AUROC. Blocks Stage 2.5 sign-off.
@@ -89,7 +89,7 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
   - [x] eval via `src.eval.metrics` (Dice + clDice), `qualifies()` gate
   - [x] CoreML export via `src.export.to_coreml` (guarded: `export.coreml` and macOS)
   - [ ] **Refinement:** `qualifies()` gates on Dice only — extend to require clDice within ~3% of teacher (playbook exit gate)
-- [ ] **Run `notebooks/colab_coronary_build.ipynb` on Colab GPU** (materialize splits → teacher → distill → student.pt) ← next real action
+- [x] **Coronary driver ran** — `outputs/coronary_student/{student.pt,student.onnx,student.int8.onnx}` produced (2026-07-12). **BUT Dice/clDice were not logged → accuracy-floor gate UNVERIFIED (re-eval to record numbers).**
 - [ ] SSL pretraining on XCAD 1,621 unlabeled + institutional cine
 - [ ] CoreML export + `make validate-coreml` + `make bench-coreml` on Mac
 - **Accuracy floor gate:** Dice ≥ 0.75 **AND** clDice within ~3% of teacher, **re-checked after INT8** (INT8 breaks thin vessels).
@@ -199,7 +199,7 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 
 *Done 2026-07-11 (code-side, local, TDD): `preprocess.process_dir`; `train_seg.py` driver; `autolabel_gdino.py` + `grounded_sam.py`; GD Slot-2 SSL-seed wiring + detector speed knobs + notebook speedup. 45 tests passing. Remaining queue is GPU-run + wiring:*
 
-1. **[Stage 1 — coronary]** Run `colab_coronary_build.ipynb` on Colab GPU — driver is ready; this is the first real training run. → Dice ≥ 0.75 + clDice.
+1. **[Stage 1 — coronary]** Driver already produced `student.pt`+onnx+int8 (2026-07-12) but **no Dice/clDice were logged** — re-eval (or re-run) to record the numbers and confirm the Dice ≥ 0.75 + clDice floor, **re-checked after INT8**.
 2. **[Stage 2 — stenosis]** Run `kaggle_stenosis_plug_and_play.ipynb` on Kaggle GPU (ARCADE + Danilov, yolo11s/768). → F1 ≥ 0.55 recall-weighted. Optionally flip `ssl.seed: gdino` for the open-vocab cold start.
 3. **[Stage 1 refinement]** Extend `qualifies()` to require clDice within ~3% of teacher (not Dice-only).
 4. **[Stage 3 close-out]** Record catheter IoU/fps/ID-switch on device; export catheter → CoreML.
@@ -209,6 +209,7 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 ---
 
 ## 8. Changelog
+- **2026-07-12 (b)** — Repo audit + cleanup (4 parallel audit agents: bugs / dead-code / tests+config / doc-drift). **outputs/** trimmed 180M→131M (deleted stale `stenosis_output_arcade-only/` [partial ep95, below-floor, curated copy already in `experiments/`], Kaggle-noise logs `run_catheter_clean/`+`run_catheter_honest2/`, `best_stenosis_dry.pt` DRY_RUN weights, `cath_nb/` dup notebook). **Dead code:** deleted `src/models/sam_adapter.py` (stub, 0 callers); removed unused imports (`preprocess` np, `track` time, `app` io) + unused `except ... as e` + dead `_find_img` in `danilov_to_yolo`. 52 tests still pass. **Doc drift fixed:** test count 39/45/47→52, Stage 1 marked *trained-but-gate-unverified* (coronary `student.pt`+onnx+int8 exist, no Dice/clDice logged). **Audit findings NOT yet actioned (reported to owner):** HIGH `train_seg.py` `device=None` → `x.to(None)` no-op crashes GPU eval; MED `train_detector` pseudo-labels hardcode class 0 (multi-class corruption) + SSL adds non-CLAHE frames; MED `cathaction_to_yolo` single-value-mask mislabel; unenforced stenosis F1 floor (`target.f1` never read); orphan configs (`edge_export`/`avf_tabular`/`tavr_ct_seg`).
 - **2026-07-12 (a)** — Second stenosis run (Kaggle, `arcade+danilov_yolo11s_768_e150`): ARCADE+Danilov, 7861/1464 split, 101/150 epochs → F1 0.885 / mAP50 0.87. **Flagged as leakage-inflated**: Danilov video frames were split per-frame (every patient in both train+val). Fixed `io_utils.split_of` → patient-grouped via `group_key` (Danilov `<site>_<patient>`; ARCADE unchanged), 47 tests pass. Also fixed `danilov_to_yolo` O(n²) image lookup (per-annotation recursive glob → single-walk index) and `.bmp` resolution. Archived `experiments/stenosis_arcade+danilov_yolo11s_768_e150/` (+RESULTS.md). Next: re-run on the patient-grouped split for the honest F1.
 - **2026-07-11 (d)** — First real stenosis run (Kaggle): `arcade_yolo11n_640_e150`, ARCADE-only → F1 0.246 / mAP50 0.147, **below floor** (learning confirmed via val previews, not a bug). Added `run_tag(cfg)` (auto run-naming, TDD) + wired Kaggle notebook to use it. Archived run to `experiments/stenosis_arcade_yolo11n_640_e150/` (+ RESULTS.md). Tests 45→**47 passing**. Next: `arcade+danilov_yolo11s_768_e150`.
 - **2026-07-11 (c)** — GD Slot 2 wired: `ssl.seed: gdino` cold-start in `train_detector.py` (`_gdino_seed_round` + pure helpers `ssl_seed`/`seed_prompt_and_classes`/`boxes_labels_to_yolo_lines`). Detector speed knobs (`train_kwargs`: cache/workers/patience/amp) threaded into all `model.train` calls; stenosis+catheter configs updated. Notebook speedups (cuDNN autotune + surfaced knobs + GD-seed note) applied to **`colab_stenosis_build.ipynb`** and both **Kaggle** builds (`kaggle_coronary_build.ipynb` cuDNN; `kaggle_stenosis_build.ipynb` cuDNN + gdino toggle) — all quality-neutral. Tests 39→**45 passing**, still torch-free.

@@ -1,6 +1,6 @@
 """CLAHE + unsharp preprocessing for grayscale XCA/DSA frames."""
 import glob, os
-import cv2, numpy as np
+import cv2
 
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".pgm")
 

@@ -13,14 +13,6 @@ OUT = "data/processed/stenosis"
 _IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")   # Danilov ships .bmp
 
 
-def _find_img(root, stem):
-    for e in _IMG_EXTS:
-        p = io.resolve_image(root, stem + e)
-        if p:
-            return p
-    return None
-
-
 def _index_images(root):
     """One os.walk -> {basename: path, stem: path} for O(1) image lookup.
     Avoids a per-annotation recursive glob (O(n*files)) that stalls on Danilov's flat dataset/ dir."""

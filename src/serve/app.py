@@ -7,12 +7,12 @@ should bind to localhost only.
     uvicorn src.serve.app:app --host 127.0.0.1 --port 8000
     MODEL=runs/coronary/student.mlpackage TASK=seg uvicorn src.serve.app:app
 """
-import io, os
+import os
 import numpy as np
 
 try:
     from fastapi import FastAPI, UploadFile, File
-except Exception as e:                                    # keep import-safe without fastapi
+except Exception:                                         # keep import-safe without fastapi
     FastAPI = None
 
 MODEL_PATH = os.environ.get("MODEL", "runs/coronary/student.mlpackage")
