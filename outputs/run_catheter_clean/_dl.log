@@ -1,3 +1,0 @@
-results.csv ERR HTTPError('429 Client Error: Too Many Requests for url: https://api.kaggle.com/v1/kernels.KernelsApiService/ListKernelSessionOutput')
-best.pt ERR HTTPError('429 Client Error: Too Many Requests for url: https://api.kaggle.com/v1/kernels.KernelsApiService/ListKernelSessionOutput')
-DONE
