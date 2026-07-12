@@ -23,6 +23,21 @@ Danilov ships **8325 frames from ~100 patients** (`<site>_<patient>_<seq>_<frame
 
 **This run's number is NOT a trustworthy Stage-2 result.** It proves the pipeline (data merge, yolo11s/768, convergence) works, not that the model generalizes to unseen patients.
 
+## Observations (training dynamics + visual audit)
+
+**Training curves (`results.png`):** all three losses (box/cls/dfl) fall monotonically; val cls-loss flattens ~0.90 late with no upward divergence → no gross overfitting *on the leaky split*. Metrics plateau by ~epoch 50; the 51→101 tail adds almost nothing (12 h cap cost little).
+
+**Metric shape:**
+- **Precision ≫ recall (0.96 vs 0.83).** Model rarely false-positives but misses lesions — the *clinically costly* direction (a missed stenosis > a false alarm).
+- **mAP50 0.87 but mAP50-95 only 0.41.** Boxes are roughly right at IoU 0.5 but localize loosely at strict IoU — expected for tiny stenosis boxes where a few px shifts tank IoU.
+
+**Visual audit (`val_batch0_pred.jpg` vs `_labels.jpg`, 16 tiles):**
+- GT has boxes on ~15/16 tiles (several with 2–4 lesions). **Prediction at ≥0.25 conf fires on only ~7/16, confidences 0.3–0.6**, and misses the multi-lesion frames (800.png, 758.png: 3–4 GT boxes → 0–2 predicted).
+- So at a *deployable* confidence the detector visibly **under-detects**. The reported recall 0.83 reflects a low-confidence operating point + near-duplicate-frame leakage, not usable-threshold behaviour.
+- Where it does fire (822, 870, 875, 756, 772) the boxes sit correctly on stenotic segments — the model has learned the right feature, it's just under-confident / under-covering.
+
+**Takeaway:** even setting leakage aside, this checkpoint is recall-limited and low-confidence — not deployment-ready. Demo: `outputs/output_stenosis/stenosis_demo.mp4` (GT-vs-pred side-by-sides + curves).
+
 ## Fix applied
 
 `io_utils.split_of` now hashes a **patient group key** (`group_key`): Danilov frames group by `<site>_<patient>` so all frames of a patient share a split; ARCADE (numeric names) unchanged. Verified: 0 patients span both splits; 47 tests pass.
