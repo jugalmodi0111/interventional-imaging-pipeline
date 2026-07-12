@@ -19,6 +19,8 @@ pycocotools
 # foundation / PEFT
 segment-anything
 peft>=0.11
+transformers>=4.44        # Grounding DINO open-vocab auto-labeler (build-side only)
+Pillow                    # PIL.Image, used by the GD labeler
 # tabular (AVF surveillance / TAVR risk)
 xgboost
 lightgbm

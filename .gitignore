@@ -5,6 +5,7 @@ runs/
 data/raw/
 data/processed/
 *.onnx
+*.onnx.data
 *.engine
 *.mlpackage
 *.pt
