@@ -91,6 +91,7 @@ def find_coco_jsons(root):
 def coco_seg_to_pairs(root, out_dir, size=512, raw_dir=None):
     """ARCADE-style: union all polygon anns per image -> binary vessel mask. Returns count."""
     from pycocotools.coco import COCO
+    dupes = duplicate_basenames_across_cocos(root)
     n = 0
     for jp in find_coco_jsons(root):
         coco = COCO(jp); base = os.path.dirname(jp)
@@ -107,7 +108,7 @@ def coco_seg_to_pairs(root, out_dir, size=512, raw_dir=None):
                     m = np.maximum(m, coco.annToMask(a))
                 except Exception:
                     pass
-            stem = os.path.splitext(os.path.basename(ip))[0]
+            stem = _disambiguated_stem(ip, jp, dupes)
             write_pair(g, m, stem, out_dir, size)
             if raw_dir:
                 write_nnunet_case(g, m, stem, raw_dir, size)
@@ -118,6 +119,7 @@ def coco_seg_to_pairs(root, out_dir, size=512, raw_dir=None):
 def coco_to_yolo(root, out_dir, size=512, class_id=0, class_map=None):
     """COCO bbox -> YOLO txt. class_map: {coco_cat_id: yolo_idx} for multi-class; else class_id."""
     from pycocotools.coco import COCO
+    dupes = duplicate_basenames_across_cocos(root)
     n = 0
     for jp in find_coco_jsons(root):
         coco = COCO(jp); base = os.path.dirname(jp)
@@ -134,7 +136,7 @@ def coco_to_yolo(root, out_dir, size=512, class_id=0, class_map=None):
                 x, y, w, h = a["bbox"]
                 lines.append(f"{cid} {(x + w / 2) / W:.6f} {(y + h / 2) / H:.6f} "
                              f"{w / W:.6f} {h / H:.6f}")
-            stem = os.path.splitext(os.path.basename(ip))[0]
+            stem = _disambiguated_stem(ip, jp, dupes)
             sp = split_of(stem)
             ensure(os.path.join(out_dir, "images", sp), os.path.join(out_dir, "labels", sp))
             g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
@@ -177,6 +179,68 @@ def write_yolo_datayaml(out_dir, names=("stenosis",)):
     return p
 
 
+def duplicate_basenames_across_cocos(root):
+    """Detect image basenames that appear in MORE THAN ONE COCO json under ``root``.
+
+    ARCADE task-2 ships train/val/test as separate folders that each renumber images ``1..N``,
+    so ``5.png`` exists in all three. The YOLO converters key output files by *basename* stem, so
+    pooling the three splits collapses three different physical images onto one output path
+    (last-write-wins) — silent data loss AND a train/test contamination. Returns
+    ``{basename: [json_paths]}`` for the colliding names only (empty dict = safe to pool).
+    """
+    seen = {}
+    for jp in find_coco_jsons(root):
+        try:
+            d = json.load(open(jp))
+        except Exception:
+            continue
+        for im in d.get("images", []):
+            bn = os.path.basename(im.get("file_name", ""))
+            if bn:
+                seen.setdefault(bn, set()).add(jp)
+    return {bn: sorted(js) for bn, js in seen.items() if len(js) > 1}
+
+
+# COCO jsons commonly live in a generic container dir next to the images (ARCADE ships
+# .../<split>/annotations/<split>.json). The split folder ('train'/'val'/'test') is the real
+# disambiguator, so when tagging a collision we skip these container names and take the first
+# meaningful ancestor dir instead.
+_GENERIC_JSON_DIRS = {"annotations", "annotation", "anns", "ann", "labels", "json", "jsons", "coco"}
+
+
+def _split_tag(json_path):
+    """Deterministic disambiguation tag for a COCO json = its split-folder name.
+
+    Walks up from the json, skipping generic container dirs, so both ``<root>/train/x.json``
+    and ``<root>/train/annotations/x.json`` yield ``'train'``. Falls back to the json's own
+    stem if no non-generic ancestor exists.
+    """
+    d = os.path.dirname(os.path.abspath(json_path))
+    while d and d != os.path.dirname(d):
+        base = os.path.basename(d)
+        if base and base.lower() not in _GENERIC_JSON_DIRS:
+            return base
+        d = os.path.dirname(d)
+    return os.path.splitext(os.path.basename(json_path))[0]
+
+
+def _disambiguated_stem(basename, json_path, dupes):
+    """OUTPUT stem for one image, resolving ARCADE cross-split basename collisions.
+
+    ``dupes`` is the ``duplicate_basenames_across_cocos`` map (basename -> [json paths]). If this
+    image's basename collides across COCO jsons (ARCADE's ``5.png`` in train/val/test), prefix the
+    source json's split tag so the three physical images map to three DISTINCT stems
+    (``train_5``/``val_5``/``test_5``) instead of clobbering one path. Non-colliding basenames keep
+    their bare stem unchanged, so Danilov ``<site>_<patient>_<seq>_<frame>`` names survive intact and
+    ``group_key`` can still collapse them.
+    """
+    bn = os.path.basename(basename)
+    stem = os.path.splitext(bn)[0]
+    if bn in dupes:
+        return f"{_split_tag(json_path)}_{stem}"
+    return stem
+
+
 def _split_stems(out_dir, split):
     """Set of image stems in a YOLO split's images/<split> dir (strip extension)."""
     d = os.path.join(out_dir, "images", split)
@@ -187,7 +251,21 @@ def _split_stems(out_dir, split):
             (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")}
 
 
-def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5):
+# SSL rounds inject frames named 'gd_<stem>' / 'pl_<stem>' into images/train. Strip the prefix
+# before grouping so a self-labeled copy of a VAL patient (gd_14_002_5_0016) still collides with
+# that patient in val — otherwise the prefix hides the re-leak from the auditor.
+_SSL_PREFIXES = ("gd_", "pl_")
+
+
+def _audit_group(stem):
+    for p in _SSL_PREFIXES:
+        if stem.startswith(p):
+            stem = stem[len(p):]
+            break
+    return group_key(stem)
+
+
+def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5, cathaction_stems=None):
     """Post-conversion honesty gate for a YOLO train/val split. Returns a report dict;
     RAISES AssertionError the moment the split could leak. Call it AFTER conversion and
     BEFORE training so a leaked run can never silently report an inflated metric.
@@ -216,8 +294,9 @@ def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5):
         f"LEAKAGE: {len(stem_overlap)} identical stems in BOTH train and val, "
         f"e.g. {sorted(stem_overlap)[:5]}")
 
-    # (1b) group overlap: no patient/clip sequence may straddle the split.
-    gtrain, gval = {group_key(s) for s in train}, {group_key(s) for s in val}
+    # (1b) group overlap: no patient/clip sequence may straddle the split (SSL prefixes stripped,
+    #      so a self-labeled copy of a val patient injected into train is still caught).
+    gtrain, gval = {_audit_group(s) for s in train}, {_audit_group(s) for s in val}
     group_overlap = gtrain & gval
     assert not group_overlap, (
         f"LEAKAGE: {len(group_overlap)} patient/clip groups span BOTH train and val, "
@@ -240,7 +319,27 @@ def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5):
             f"per-frame and WILL leak. Inspect the names and update group_key()/_PATIENT_RE "
             f"before trusting any F1. Example ungrouped: {sorted(ungrouped)[:5]}")
 
+    # (2b) same silent-grouping-no-op guard for CathAction video frames. group_key only collapses
+    #      names matching '<clip>_img-<seg>-<frame>'; if the real files are named otherwise the
+    #      collapse silently does nothing and the split degrades to per-frame. Pass the true set of
+    #      CathAction image stems to prove they were actually grouped by clip (independent of regex).
+    cathaction_report = None
+    if cathaction_stems is not None:
+        cset = set(cathaction_stems)
+        c_in_split = (train | val) & cset
+        ungrouped = {s for s in c_in_split if group_key(s) == s}
+        frac = len(ungrouped) / max(1, len(c_in_split))
+        cathaction_report = {"cathaction_frames": len(c_in_split),
+                             "ungrouped": len(ungrouped), "ungrouped_frac": round(frac, 3),
+                             "clip_groups": len({group_key(s) for s in c_in_split})}
+        assert c_in_split and frac <= max_ungrouped_frac, (
+            f"UNGROUPED CATHACTION: {len(ungrouped)}/{len(c_in_split)} "
+            f"({frac:.0%}) CathAction frames were NOT collapsed by group_key — their filenames do "
+            f"not match the assumed '<clip>_img-<seg>-<frame>' pattern, so the split is per-frame "
+            f"and WILL leak. Inspect the names and update group_key()/_CLIP_RE before trusting any "
+            f"F1. Example ungrouped: {sorted(ungrouped)[:5]}")
+
     return {"train_imgs": len(train), "val_imgs": len(val),
             "train_groups": len(gtrain), "val_groups": len(gval),
             "val_frac_by_group": round(len(gval) / max(1, len(gtrain) + len(gval)), 3),
-            "danilov": danilov_report}
+            "danilov": danilov_report, "cathaction": cathaction_report}

@@ -4,7 +4,7 @@ ARCADE ships COCO-format polygon annotations (25 SYNTAX regions). For the binary
 student we UNION all region polygons into one 0/255 mask. Also emits nnU-Net raw for the teacher.
 Confirm your ARCADE download layout; the COCO json + images are auto-discovered under the root.
 """
-import argparse, os, yaml
+import argparse, glob, os, yaml
 from src.data_prep import io_utils as io
 
 
@@ -18,8 +18,12 @@ def main(cfg):
     if n == 0:
         raise SystemExit(f"No COCO images resolved under {root!r}. "
                          "Check the ARCADE path / that annotation json + images downloaded.")
-    io.write_nnunet_datasetjson(raw, n)
-    print(f"ARCADE -> {out_dir}/{{img,msk}} and {raw} : {n} cases")
+    # numTraining must be the count of cases ACTUALLY on disk, not the returned n: with ARCADE's
+    # cross-split basename collisions the returned n counted duplicates that overwrote each other,
+    # inflating the header. Glob the real imagesTr files (as dca1_to_nnunet does).
+    ntr = len(glob.glob(os.path.join(raw, "imagesTr", "*_0000.png")))
+    io.write_nnunet_datasetjson(raw, ntr)
+    print(f"ARCADE -> {out_dir}/{{img,msk}} and {raw} : {n} cases (raw total {ntr})")
 
 
 if __name__ == "__main__":

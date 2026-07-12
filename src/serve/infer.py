@@ -10,6 +10,22 @@ from src.data_prep.preprocess import clahe_unsharp
 from src.eval.audit import record
 
 
+def seg_confidence(prob_map):
+    """Two-sided segmentation confidence in [0.5, 1], consistent with calibration.coverage_risk.
+
+    = mean over ALL pixels of max(p, 1-p). A confident background pixel (p~0) counts as confident
+    just like a confident foreground pixel (p~1); an on-the-fence pixel (p~0.5) counts as uncertain.
+    Uniform-0.5 map -> 0.5 (max uncertainty -> defers); a crisp near-0/1 map -> ~1.0 (keeps).
+
+    The old score, mean(prob[mask==1]), was ONE-SIDED: it lived in [0.5,1] only for foreground
+    pixels, ignored confident background entirely, so a defer_below of 0.55 almost never fired and
+    it disagreed with coverage_risk's max(p,1-p) risk model."""
+    p = np.asarray(prob_map, dtype=np.float64)
+    if p.size == 0:
+        return 0.0
+    return float(np.maximum(p, 1.0 - p).mean())
+
+
 class _CoreMLBase:
     def __init__(self, mlpackage, model_version=None, size=512):
         import coremltools as ct
@@ -37,7 +53,7 @@ class SegModel(_CoreMLBase):
         logits = np.asarray(list(out.values())[0]).squeeze()
         prob = 1.0 / (1.0 + np.exp(-logits))
         mask = (prob >= 0.5).astype(np.uint8)
-        conf = float(prob[mask == 1].mean()) if mask.any() else 0.0     # mean fg confidence
+        conf = seg_confidence(prob)     # two-sided: mean max(p,1-p), matches coverage_risk
         deferred = conf < self.defer_below
         res = {"mask": mask, "foreground_prob": prob, "confidence": conf, "deferred": deferred}
         if self.audit:

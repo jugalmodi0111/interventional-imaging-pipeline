@@ -28,6 +28,21 @@ def ssl_seed(cfg):
     return cfg.get("ssl", {}).get("seed")
 
 
+def ssl_enabled(cfg):
+    """(do_pseudo, do_gdino): whether each SSL mode is allowed to run.
+
+    Both pseudo-label and the gdino cold-start copy every ssl.unlabeled_dir frame into images/train,
+    so they're only safe with a disjoint unlabeled set explicitly attached. With no usable
+    cfg['ssl']['unlabeled_dir'] (None/empty) both modes are forced off so a CLI/notebook run can't
+    silently re-leak val patients into train. Pure (config-only, no filesystem) — train() adds the
+    on-disk existence check.
+    """
+    ssl = cfg.get("ssl") or {}
+    if not ssl.get("unlabeled_dir"):                         # None/empty -> no disjoint set -> both off
+        return (False, False)
+    return (bool(ssl.get("pseudo_label")), ssl.get("seed") == "gdino")
+
+
 def seed_prompt_and_classes(cfg):
     """(open-vocab text prompt, {label_string: yolo_class_id}) for the detector's task.
 
@@ -72,6 +87,29 @@ def train_kwargs(cfg):
             "patience": tr.get("patience", 30), "amp": tr.get("amp", True)}
 
 
+def best_f1_from_pr(precision_arr, recall_arr):
+    """Max F1 = 2PR/(P+R) over paired precision/recall points (div-by-zero -> 0.0).
+
+    Accepts the ultralytics per-class p/r arrays, or [mean_p]/[mean_r] passed as single-element lists
+    for the scalar fallback. Empty -> 0.0. Pure/torch-free so the F1 floor can be unit-tested with no
+    GPU val run.
+    """
+    best = 0.0
+    for p, r in zip(precision_arr, recall_arr):
+        p, r = float(p), float(r)
+        denom = p + r
+        f1 = (2.0 * p * r / denom) if denom > 0 else 0.0     # guard P=R=0
+        if f1 > best:
+            best = f1
+    return best
+
+
+def qualifies_det(scores, cfg):
+    """True iff scores['f1'] clears the F1 floor cfg['target']['f1'] (default 0.57, inclusive)."""
+    floor = (cfg.get("target") or {}).get("f1", 0.57)
+    return float(scores.get("f1") or 0.0) >= float(floor)
+
+
 def train(cfg, project=None, data_yaml=None, device=0):
     # device=0 forces GPU (fails loud if none); pass 'cpu' to override.
     from ultralytics import YOLO
@@ -83,14 +121,37 @@ def train(cfg, project=None, data_yaml=None, device=0):
     model.train(data=data_yaml, project=project, name="base", exist_ok=True, device=device, **tk)
     best = os.path.join(project, "base", "weights", "best.pt")
 
-    if ssl_seed(cfg) == "gdino":                              # open-vocab cold start before self-training
-        best = _gdino_seed_round(cfg, project, data_yaml, device=device)
+    ssl = cfg.get("ssl") or {}
+    udir = ssl.get("unlabeled_dir")                          # gate SSL on a disjoint, on-disk unlabeled set
+    has_unlabeled = bool(udir and os.path.isdir(udir)
+                         and glob.glob(os.path.join(udir, "**", "*.png"), recursive=True))
+    do_pseudo, do_gdino = ssl_enabled(cfg)                   # config intent (None/empty dir -> both off)
 
-    if cfg.get("ssl", {}).get("pseudo_label"):
-        best = _pseudo_label_round(best, cfg, project, data_yaml, device=device)
+    if ssl_seed(cfg) == "gdino":                              # open-vocab cold start before self-training
+        if do_gdino and has_unlabeled:
+            best = _gdino_seed_round(cfg, project, data_yaml, device=device)
+        else:
+            print("SSL gdino skipped: no disjoint ssl.unlabeled_dir")
+
+    if ssl.get("pseudo_label"):
+        if do_pseudo and has_unlabeled:
+            best = _pseudo_label_round(best, cfg, project, data_yaml, device=device)
+        else:
+            print("SSL pseudo-label skipped: no disjoint ssl.unlabeled_dir")
 
     val = YOLO(best).val(data=data_yaml, device=device)
-    print("best:", best, "| mAP50:", round(float(val.box.map50), 4))
+    box = val.box
+    p_arr, r_arr = getattr(box, "p", None), getattr(box, "r", None)
+    if p_arr is not None and r_arr is not None and len(p_arr) and len(r_arr):
+        f1 = best_f1_from_pr(p_arr, r_arr)                   # best F1 over the per-class PR points
+    else:                                                    # fall back to mean-P/mean-R scalars
+        f1 = best_f1_from_pr([float(getattr(box, "mp", 0.0) or 0.0)],
+                             [float(getattr(box, "mr", 0.0) or 0.0)])
+    floor = (cfg.get("target") or {}).get("f1", 0.57)
+    ok = qualifies_det({"f1": f1}, cfg)
+    print("best:", best, "| F1:", round(f1, 4), "| mAP50:", round(float(box.map50), 4))
+    print("qualifies_det:", ok)
+    print(f"[{'PASS' if ok else 'FAIL'}] F1 {round(f1, 4)} {'>=' if ok else '<'} floor {floor}")
     return best
 
 

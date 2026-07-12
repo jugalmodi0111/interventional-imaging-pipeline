@@ -84,6 +84,16 @@ def _danilov_native(root, out_dir, size):
     return n
 
 
+def _danilov_stems(root):
+    """True set of Danilov frame stems from raw — used to prove group_key actually collapsed them."""
+    stems = set()
+    for dp, _, files in os.walk(root):
+        for f in files:
+            if os.path.splitext(f)[1].lower() in _IMG_EXTS:
+                stems.add(os.path.splitext(f)[0])
+    return stems
+
+
 def main(cfg):
     ds = cfg["datasets"]
     size = cfg.get("model", {}).get("imgsz", 640)
@@ -92,6 +102,11 @@ def main(cfg):
         d = ds.get(key)
         if not d:
             continue
+        dupes = io.duplicate_basenames_across_cocos(d["root"])       # ARCADE renumbers per split
+        if dupes:
+            print(f"[info] {key}: {len(dupes)} basenames repeat across COCO splits "
+                  f"-> disambiguated by split prefix in coco_to_yolo (no data loss). "
+                  f"e.g. {list(dupes)[:5]}")
         c = io.coco_to_yolo(d["root"], OUT, size=size, class_id=0)   # COCO path (both if present)
         if c == 0 and key == "danilov":
             c = _danilov_native(d["root"], OUT, size)
@@ -100,7 +115,12 @@ def main(cfg):
     if total == 0:
         raise SystemExit(f"No stenosis boxes converted. Check {[ds[k]['root'] for k in ds]}.")
     yml = io.write_yolo_datayaml(OUT, names=("stenosis",))
-    print(f"stenosis -> {OUT} : {total} images ; data cfg {yml}")
+    # Honesty gate: RAISE before anyone trains on a split that could leak (patient/clip in both
+    # train+val, or Danilov frames that group_key failed to collapse -> silent per-frame split).
+    dstems = _danilov_stems(ds["danilov"]["root"]) if ds.get("danilov") else None
+    rep = io.audit_split_leakage(OUT, danilov_stems=dstems)
+    print(f"stenosis -> {OUT} : {total} images ; data cfg {yml} ; leakage-audit OK "
+          f"(train {rep['train_imgs']}/{rep['train_groups']}g, val {rep['val_imgs']}/{rep['val_groups']}g)")
 
 
 if __name__ == "__main__":

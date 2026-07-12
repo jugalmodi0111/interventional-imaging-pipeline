@@ -4,11 +4,13 @@ A per-frame split leaks near-identical consecutive frames of the same clip/patie
 BOTH train and val, inflating metrics. group_key() must collapse every frame of a source
 sequence to one key so split_of() puts the whole sequence on one side.
 """
+import json
 import os
 
 import pytest
 
-from src.data_prep.io_utils import audit_split_leakage, group_key, split_of
+from src.data_prep.io_utils import (audit_split_leakage, duplicate_basenames_across_cocos,
+                                     group_key, split_of)
 
 
 def _write_split(tmp, train_stems, val_stems):
@@ -82,6 +84,16 @@ def test_audit_raises_when_a_patient_spans_both_splits(tmp_path):
         audit_split_leakage(tmp, danilov_stems=[f"14_002_5_{i:04d}" for i in range(10)])
 
 
+def test_audit_catches_ssl_prefixed_val_patient_releaked_into_train(tmp_path):
+    # SSL wrote a self-labeled copy of a VAL patient into train as 'pl_<stem>'. The prefix must be
+    # stripped before grouping, or the re-leak hides from the auditor.
+    val = [f"14_002_5_{i:04d}" for i in range(10)]
+    train = [f"14_070_1_{i:04d}" for i in range(8)] + ["pl_14_002_5_0003"]   # leaked val patient
+    tmp = _write_split(str(tmp_path), train_stems=train, val_stems=val)
+    with pytest.raises(AssertionError, match="span BOTH"):
+        audit_split_leakage(tmp)
+
+
 def test_audit_raises_when_danilov_names_defeat_group_key(tmp_path):
     # Real files named unlike '<site>_<patient>_<seq>_<frame>' -> group_key can't collapse them
     # -> silent per-frame split. The auditor must catch this via the independent danilov_stems set.
@@ -89,3 +101,28 @@ def test_audit_raises_when_danilov_names_defeat_group_key(tmp_path):
     tmp = _write_split(str(tmp_path), train_stems=bad[:14], val_stems=bad[14:])
     with pytest.raises(AssertionError, match="UNGROUPED DANILOV"):
         audit_split_leakage(tmp, danilov_stems=bad)
+
+
+# --- duplicate_basenames_across_cocos: ARCADE cross-split stem collision -------------
+
+def _coco(path, file_names):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    json.dump({"images": [{"id": i, "file_name": fn} for i, fn in enumerate(file_names)],
+               "annotations": [], "categories": []}, open(path, "w"))
+
+
+def test_flags_arcade_style_cross_split_basename_collision(tmp_path):
+    # train/val/test each renumber 1..N -> '5.png' in all three -> collision.
+    _coco(os.path.join(tmp_path, "train", "annotations", "a.json"), ["1.png", "5.png", "9.png"])
+    _coco(os.path.join(tmp_path, "val", "annotations", "a.json"), ["1.png", "5.png"])
+    _coco(os.path.join(tmp_path, "test", "annotations", "a.json"), ["5.png"])
+    dupes = duplicate_basenames_across_cocos(str(tmp_path))
+    assert set(dupes) == {"1.png", "5.png"}
+    assert len(dupes["5.png"]) == 3 and len(dupes["1.png"]) == 2
+    assert "9.png" not in dupes
+
+
+def test_no_collision_when_basenames_are_unique(tmp_path):
+    _coco(os.path.join(tmp_path, "train", "a.json"), ["1.png", "2.png"])
+    _coco(os.path.join(tmp_path, "val", "a.json"), ["3.png", "4.png"])
+    assert duplicate_basenames_across_cocos(str(tmp_path)) == {}

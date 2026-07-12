@@ -55,9 +55,44 @@ def nnunet_predict_cmd(dataset_id, in_dir, out_dir, cfg):
     return cmd + (["-p", p] if p else [])
 
 
-def qualifies(scores, cfg):
-    """True once the student clears the target Dice gate (cfg['target']['dice'])."""
-    return scores.get("dice", 0.0) >= cfg.get("target", {}).get("dice", 0.75)
+def qualifies(scores, cfg, teacher_scores=None):
+    """True once the student clears BOTH gates. PURE.
+
+    - Dice floor: scores['dice'] >= cfg['target']['dice'] (default 0.75).
+    - clDice: (a) optional absolute floor cfg['target'].get('cldice') — skipped when unset; AND
+              (b) when teacher_scores is given, the student's clDice must stay within
+                  cfg['target'].get('cldice_rel_teacher', 0.03) of the TEACHER's clDice
+                  (scores['cldice'] >= teacher_scores['cldice'] - tol). Distillation that keeps
+                  Dice but drops connectivity (thin vessels) must NOT qualify.
+
+    Backward compatible: teacher_scores=None -> just the Dice floor + optional absolute clDice
+    floor (an absent cfg['target']['cldice'] leaves the old Dice-only behaviour untouched)."""
+    tgt = cfg.get("target", {})
+    if scores.get("dice", 0.0) < tgt.get("dice", 0.75):
+        return False
+    cl = scores.get("cldice", 0.0)
+    floor = tgt.get("cldice")
+    if floor is not None and cl < floor:
+        return False
+    if teacher_scores is not None:
+        tol = tgt.get("cldice_rel_teacher", 0.03)
+        if cl < teacher_scores.get("cldice", 0.0) - tol:
+            return False
+    return True
+
+
+def split_stems(all_stems, val_frac=0.2):
+    """PURE patient-grouped train/val split of image stems -> (train_stems, val_stems).
+
+    Reuses io_utils.split_of (which hashes group_key(stem)) so EVERY frame of one patient/clip
+    sequence lands on ONE side — no per-frame leakage — and the result is deterministic across
+    runs/processes. Does NOT reimplement the hashing. Returns two sorted, non-overlapping lists;
+    an empty input yields ([], [])."""
+    from src.data_prep import io_utils as io
+    train, val = [], []
+    for s in sorted(set(all_stems)):
+        (val if io.split_of(s, val_frac) == "val" else train).append(s)
+    return train, val
 
 
 def _scores(student, loader, device=None):
@@ -72,7 +107,11 @@ def _scores(student, loader, device=None):
             for pi, gi in zip(pred, y.numpy()):
                 ds.append(metrics.dice(pi[0], gi[0])); cs.append(metrics.cldice(pi[0], gi[0]))
     student.train()
-    mean = lambda a: sum(a) / max(1, len(a))
+    # metrics.dice/cldice return NaN on empty-GT frames (trivial, no vessel to score); drop them
+    # so a single empty frame can't poison the mean into NaN and false-pass the gate (nan<0.75 is False).
+    def mean(a):
+        v = [x for x in a if x == x]
+        return sum(v) / len(v) if v else 0.0
     return {"dice": mean(ds), "cldice": mean(cs)}
 
 
@@ -110,20 +149,77 @@ def train(cfg, processed_dir="data/processed/coronary",
         subprocess.run(nnunet_predict_cmd(did, os.path.join(raw, "imagesTr"), teacher_cache, cfg),
                        check=True)
 
-    # 3) distill student against cached teacher logits
-    loader = DataLoader(TeacherCacheDataset(processed_dir, teacher_cache, size=size),
-                        batch_size=cfg.get("train", {}).get("batch", 8), shuffle=True)
+    # 3) patient-grouped held-out split: distill on TRAIN cases, evaluate on UNSEEN VAL cases.
+    #    (distilling AND scoring on one loader over ALL cases is eval-on-train -> memorized Dice.)
+    tr = cfg.get("train", {})
+    all_stems = [os.path.splitext(os.path.basename(p))[0]
+                 for p in glob.glob(os.path.join(processed_dir, "img", "*"))]
+    train_stems, val_stems = split_stems(all_stems, val_frac=tr.get("val_frac", 0.2))
+    batch = tr.get("batch", 8)
+    train_loader = DataLoader(
+        TeacherCacheDataset(processed_dir, teacher_cache, size=size, stems=train_stems),
+        batch_size=batch, shuffle=True)
+    if val_stems:
+        eval_loader = DataLoader(
+            TeacherCacheDataset(processed_dir, teacher_cache, size=size, stems=val_stems),
+            batch_size=batch, shuffle=False)
+    else:
+        print("WARNING: empty val split (tiny dataset) — scoring on the TRAIN loader; reported "
+              "Dice/clDice are eval-on-train and NOT a held-out estimate.")
+        eval_loader = train_loader
+
+    # 4) distill student against cached teacher logits, evaluating on the held-out VAL loader
     student = TinyUNet(**student_kwargs(cfg))
-    student = distill(student, loader, eval_fn=lambda m: str(_scores(m, loader, device)),
+    student = distill(student, train_loader, eval_fn=lambda m: str(_scores(m, eval_loader, device)),
                       device=device, ckpt=ckpt, **distill_kwargs(cfg))
 
-    # 4) final gate + optional CoreML export (Mac only)
-    scores = _scores(student, loader, device)
+    # 5) final gate on the held-out split + optional CoreML export (Mac only)
+    scores = _scores(student, eval_loader, device)
     print("scores:", scores, "| qualifies:", qualifies(scores, cfg))
     if export_model and cfg.get("export", {}).get("coreml") and sys.platform == "darwin":
         from src.export.to_coreml import export
         export(ckpt, **student_kwargs(cfg))
+        # INT8/CoreML clDice re-check must never be silently skipped: palettization can hold Dice
+        # while clDice (thin-vessel connectivity) collapses. Re-score on the SAME held-out split.
+        _int8_cldice_recheck(cfg, ckpt, processed_dir, val_stems, size)
     return ckpt
+
+
+def _int8_cldice_recheck(cfg, ckpt, processed_dir, val_stems, size):
+    """Best-effort: re-score the exported CoreML model's clDice-drop on the held-out val split via
+    the existing src/export/coreml_validate.py gate. Materializes a val/ dir of ONLY the held-out
+    stems so the gate scores UNSEEN cases. Guarded: on any gap/error, prints an explicit
+    '[TODO] INT8 clDice re-check not run' rather than skipping it silently."""
+    import shutil, tempfile
+    from types import SimpleNamespace
+    try:
+        from src.export import coreml_validate
+        coreml_path = ckpt.replace(".pt", ".mlpackage")
+        if not val_stems or not os.path.isdir(coreml_path):
+            print("[TODO] INT8 clDice re-check not run "
+                  f"(val_stems={len(val_stems or [])}, coreml_present={os.path.isdir(coreml_path)})")
+            return
+        tmp = tempfile.mkdtemp(prefix="coreml_val_")
+        vi, vm = os.path.join(tmp, "img"), os.path.join(tmp, "msk")
+        os.makedirs(vi); os.makedirs(vm)
+        n = 0
+        for s in val_stems:
+            si = os.path.join(processed_dir, "img", s + ".png")
+            sm = os.path.join(processed_dir, "msk", s + ".png")
+            if os.path.exists(si) and os.path.exists(sm):
+                shutil.copyfile(si, os.path.join(vi, s + ".png"))
+                shutil.copyfile(sm, os.path.join(vm, s + ".png"))
+                n += 1
+        if not n:
+            print("[TODO] INT8 clDice re-check not run (no val img/msk pairs found on disk)")
+            return
+        sk = student_kwargs(cfg)
+        a = SimpleNamespace(coreml=coreml_path, weights=ckpt, images=vi, masks=vm, size=size,
+                            base=sk["base"], depth=sk["depth"], limit=n,
+                            gate=cfg.get("target", {}).get("cldice_rel_teacher", 0.03))
+        print(f"[INT8 clDice re-check] gate PASS={coreml_validate.main(a)}")
+    except Exception as e:
+        print(f"[TODO] INT8 clDice re-check not run (error: {e})")
 
 
 def main(cfg):

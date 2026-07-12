@@ -30,10 +30,14 @@ class TeacherCacheDataset(Dataset):
     (e.g. from nnUNetv2_predict --save_probabilities). Adjust the stem mapping to match
     whatever your prep wrote.
     """
-    def __init__(self, processed_dir, teacher_cache, size=512):
+    def __init__(self, processed_dir, teacher_cache, size=512, stems=None):
         import cv2
         self.cv2, self.size = cv2, size
         self.imgs = sorted(glob.glob(os.path.join(processed_dir, "img", "*")))
+        if stems is not None:                              # held-out split: keep only allowed stems
+            allow = set(stems)
+            self.imgs = [p for p in self.imgs
+                         if os.path.splitext(os.path.basename(p))[0] in allow]
         self.msk_dir = os.path.join(processed_dir, "msk")
         self.cache = teacher_cache
 

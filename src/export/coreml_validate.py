@@ -50,11 +50,16 @@ def main(a):
     tm = load_student(a.weights, base=a.base, depth=a.depth)
 
     dc_t = dc_c = cl_t = cl_c = 0.0
+    n = 0
     for x, gt in zip(xs, ys):
         pt, pc = _torch_pred(tm, x), _coreml_pred(cm, x)
-        dc_t += dice(pt, gt); dc_c += dice(pc, gt)
+        d_t = dice(pt, gt)
+        if d_t != d_t:                       # NaN -> empty-GT frame (dice & cldice both NaN); exclude
+            continue
+        dc_t += d_t; dc_c += dice(pc, gt)
         cl_t += cldice(pt, gt); cl_c += cldice(pc, gt)
-    n = len(xs)
+        n += 1
+    n = max(1, n)
     dc_t, dc_c, cl_t, cl_c = dc_t / n, dc_c / n, cl_t / n, cl_c / n
     drop = cl_t - cl_c
     print(f"n={n}")
