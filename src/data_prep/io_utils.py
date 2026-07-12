@@ -175,3 +175,72 @@ def write_yolo_datayaml(out_dir, names=("stenosis",)):
         f.write(f"path: {os.path.abspath(out_dir)}\ntrain: images/train\nval: images/val\n")
         f.write(f"nc: {len(names)}\nnames: {list(names)}\n")
     return p
+
+
+def _split_stems(out_dir, split):
+    """Set of image stems in a YOLO split's images/<split> dir (strip extension)."""
+    d = os.path.join(out_dir, "images", split)
+    if not os.path.isdir(d):
+        return set()
+    return {os.path.splitext(f)[0] for f in os.listdir(d)
+            if os.path.splitext(f)[1].lower() in
+            (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")}
+
+
+def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5):
+    """Post-conversion honesty gate for a YOLO train/val split. Returns a report dict;
+    RAISES AssertionError the moment the split could leak. Call it AFTER conversion and
+    BEFORE training so a leaked run can never silently report an inflated metric.
+
+    Two independent failure modes are checked:
+
+    1. Group leakage — no ``group_key`` (and no bare stem) may appear in BOTH train and val.
+       This is the direct guard: near-identical consecutive video frames of one patient must
+       land entirely on one side, or val F1 is inflated (the 2026-07-12 F1 0.885 signature).
+
+    2. Silent grouping no-op — ``group_key`` only collapses Danilov frames whose names match
+       ``<site>_<patient>_<seq>_<frame>``. If the real files are named differently the collapse
+       silently does nothing and the split degrades back to per-frame. Pass ``danilov_stems``
+       (the true set of Danilov image stems, e.g. from walking data/raw/danilov) so this can be
+       detected *independently of the regex*: if more than ``max_ungrouped_frac`` of them are
+       ungrouped (``group_key(stem) == stem``), the grouping is untrustworthy -> raise, because
+       we cannot prove the split is honest.
+    """
+    train, val = _split_stems(out_dir, "train"), _split_stems(out_dir, "val")
+    assert train and val, (
+        f"empty split (train={len(train)}, val={len(val)}) — conversion produced no data")
+
+    # (1a) exact-stem overlap: the same image file must never be in both splits.
+    stem_overlap = train & val
+    assert not stem_overlap, (
+        f"LEAKAGE: {len(stem_overlap)} identical stems in BOTH train and val, "
+        f"e.g. {sorted(stem_overlap)[:5]}")
+
+    # (1b) group overlap: no patient/clip sequence may straddle the split.
+    gtrain, gval = {group_key(s) for s in train}, {group_key(s) for s in val}
+    group_overlap = gtrain & gval
+    assert not group_overlap, (
+        f"LEAKAGE: {len(group_overlap)} patient/clip groups span BOTH train and val, "
+        f"e.g. {sorted(group_overlap)[:5]} — frames of one patient leaked across the split")
+
+    # (2) prove the Danilov video frames were actually collapsed (not a silent regex no-op).
+    danilov_report = None
+    if danilov_stems is not None:
+        dset = set(danilov_stems)
+        d_in_split = (train | val) & dset
+        ungrouped = {s for s in d_in_split if group_key(s) == s}
+        frac = len(ungrouped) / max(1, len(d_in_split))
+        danilov_report = {"danilov_frames": len(d_in_split),
+                          "ungrouped": len(ungrouped), "ungrouped_frac": round(frac, 3),
+                          "patient_groups": len({group_key(s) for s in d_in_split})}
+        assert d_in_split and frac <= max_ungrouped_frac, (
+            f"UNGROUPED DANILOV: {len(ungrouped)}/{len(d_in_split)} "
+            f"({frac:.0%}) Danilov frames were NOT collapsed by group_key — their filenames do "
+            f"not match the assumed '<site>_<patient>_<seq>_<frame>' pattern, so the split is "
+            f"per-frame and WILL leak. Inspect the names and update group_key()/_PATIENT_RE "
+            f"before trusting any F1. Example ungrouped: {sorted(ungrouped)[:5]}")
+
+    return {"train_imgs": len(train), "val_imgs": len(val),
+            "train_groups": len(gtrain), "val_groups": len(gval),
+            "val_frac_by_group": round(len(gval) / max(1, len(gtrain) + len(gval)), 3),
+            "danilov": danilov_report}

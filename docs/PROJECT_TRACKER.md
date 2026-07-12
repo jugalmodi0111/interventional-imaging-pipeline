@@ -29,7 +29,7 @@
 | 5 | Regulatory / intended-use gate | `[ ]` not started | — | name before any non-research use |
 | GD | **Grounding DINO labeler** (new) | `~` scaffolded | — | modules + pure helpers done (2026-07-11); SSL-seed wiring pending |
 
-**One-line summary:** Stage 3 (catheter) trained end-to-end. Stage 1 (coronary) driver **ran** — `student.pt`+onnx+int8 exist in `outputs/coronary_student/` (2026-07-12), but **Dice/clDice were not logged; the accuracy-floor gate is unverified**. Stage 2 (stenosis) has data + code ready; honest patient-grouped re-run still pending. Grounding DINO labeler is scaffolded (modules import torch-free, pure helpers unit-tested). Local test suite: **52 passing** (`pytest tests/`).
+**One-line summary:** Stage 3 (catheter) trained end-to-end. Stage 1 (coronary) driver **ran** — `student.pt`+onnx+int8 exist in `outputs/coronary_student/` (2026-07-12), but **Dice/clDice were not logged; the accuracy-floor gate is unverified**. Stage 2 (stenosis) has data + code ready; honest patient-grouped re-run still pending. Grounding DINO labeler is scaffolded (modules import torch-free, pure helpers unit-tested). Local test suite: **55 passing** (`pytest tests/`).
 
 ---
 
@@ -104,7 +104,8 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 - [x] **First real run done** (2026-07-11, Kaggle): `arcade_yolo11n_640_e150`, ARCADE-only → **F1 0.246, mAP50 0.147 — below floor 0.57.** Verified learning (not a bug): clean labels, preds land on vessels but miss many. Archived: [`experiments/stenosis_arcade_yolo11n_640_e150/`](../experiments/stenosis_arcade_yolo11n_640_e150/RESULTS.md)
 - [~] **Second run done** (2026-07-12, Kaggle, `arcade+danilov_yolo11s_768_e150`): +Danilov (7861 train/1464 val), 11s, imgsz 768, 101/150 epochs (12h cap) → **F1 0.885, mAP50 0.87 — but per-frame split leaks Danilov video frames (every patient in both splits), so the number is inflated and NOT a trustworthy Stage-2 result.** Archived: [`experiments/stenosis_arcade+danilov_yolo11s_768_e150/`](../experiments/stenosis_arcade+danilov_yolo11s_768_e150/RESULTS.md)
 - [x] **Leakage fix**: `io_utils.split_of` now patient-grouped (`group_key`) so Danilov frames of a patient share a split; ARCADE unchanged; 47 tests pass
-- [ ] **Re-run with patient-grouped split** → the honest F1 vs the 0.57 floor (best.pt above was trained on the leaky split — retrain before shipping)
+- [x] **Leakage hard-gate in the notebook** (2026-07-12 c): `io_utils.audit_split_leakage()` + a new §3b cell in `kaggle_stenosis_plug_and_play.ipynb` **raise before training** if (a) any patient/clip group is in both train+val, or (b) Danilov frames were not actually collapsed by `group_key` (real filenames ≠ `<site>_<patient>_<seq>_<frame>` → silent per-frame leak). Danilov stem set is read from raw *independently of the regex* so a silent no-op can't pass. SSL pseudo-label auto-disabled unless a disjoint `ssl.unlabeled_dir` exists (else it re-leaks val frames into train). 55 tests pass.
+- [ ] **Re-run with patient-grouped split** → the honest F1 vs the 0.57 floor (best.pt above was trained on the leaky split — retrain before shipping). Notebook now blocks the run if the split would leak, so the F1 it reports is trustworthy by construction.
 - [ ] Run naming: `run_tag(cfg)` auto-names each run folder (no clobber); Kaggle notebook wired
 - [ ] Pseudo-label SSL round on unlabeled frames (raise recall)
 - [ ] Track COCO AP/AR on Danilov
