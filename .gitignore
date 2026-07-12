@@ -14,3 +14,9 @@ data/processed/
 # Kaggle API output dumps (weights unpack as extensionless shards; keep out of git)
 outputs/output_stenosis/
 outputs/**/best-stenosis/
+
+# nnUNet preprocessing cache (blosc2 arrays; regenerable, constantly changing)
+*.b2nd
+nnUNet_raw/
+nnUNet_preprocessed/
+nnUNet_results/
