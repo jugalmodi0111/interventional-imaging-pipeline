@@ -5,9 +5,20 @@ Keeps every converter emitting the SAME on-disk shapes so datasets are interchan
   - nnU-Net teacher:       $nnUNet_raw/Dataset0XX_<name>/{imagesTr,labelsTr} + dataset.json
   - YOLO detector:         data/processed/<task>/{images,labels}/<split>/<stem>.{png,txt}
 """
-import glob, hashlib, json, os
+import glob, hashlib, json, os, re
 import cv2, numpy as np
 from src.data_prep.preprocess import clahe_unsharp
+
+# Danilov frames are named <site>_<patient>_<seq>_<frame> (e.g. 14_002_5_0016). Consecutive
+# frames are near-identical, so a per-frame split leaks the same lesion into train AND val.
+# Group by <site>_<patient> so every frame of a patient lands in the same split (honest holdout).
+_PATIENT_RE = re.compile(r"^(\d+_\d+)_\d+_\d+$")
+
+
+def group_key(name):
+    """Split-group key: Danilov -> patient (site_patient); everything else -> the name itself."""
+    m = _PATIENT_RE.match(name)
+    return m.group(1) if m else name
 
 
 def ensure(*ds):
@@ -16,8 +27,9 @@ def ensure(*ds):
 
 
 def split_of(name, val_frac=0.15):
-    """Deterministic train/val split by filename hash (stable across runs/processes)."""
-    h = int(hashlib.md5(name.encode()).hexdigest(), 16) % 1000
+    """Deterministic, patient-grouped train/val split (stable across runs/processes).
+    Hashes group_key(name) so all frames of a Danilov patient share a split (no frame leakage)."""
+    h = int(hashlib.md5(group_key(name).encode()).hexdigest(), 16) % 1000
     return "val" if h < val_frac * 1000 else "train"
 
 
