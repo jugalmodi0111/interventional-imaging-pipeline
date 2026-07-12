@@ -12,14 +12,14 @@ from src.data_prep import io_utils as io
 def _pairs(root):
     imgs = {}
     for p in glob.glob(os.path.join(root, "**", "*"), recursive=True):
-        low = p.lower()
-        if not low.endswith((".pgm", ".png", ".bmp", ".tif", ".tiff")):
+        if not p.lower().endswith((".pgm", ".png", ".bmp", ".tif", ".tiff")):
             continue
-        stem = os.path.splitext(os.path.basename(p))[0]
-        if stem.endswith("_gt") or "ground" in low:
-            imgs.setdefault(stem.replace("_gt", ""), {})["gt"] = p
+        sl = os.path.splitext(os.path.basename(p))[0].lower()    # match on the stem, not the full path
+        if sl.endswith("_gt") or sl.endswith("_gt_mask") or sl.endswith("_ground_truth"):
+            key = sl.rsplit("_gt", 1)[0].rsplit("_ground_truth", 1)[0]
+            imgs.setdefault(key, {})["gt"] = p
         else:
-            imgs.setdefault(stem, {})["im"] = p
+            imgs.setdefault(sl, {})["im"] = p
     return {k: v for k, v in imgs.items() if "im" in v and "gt" in v}
 
 

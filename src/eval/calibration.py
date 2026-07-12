@@ -6,8 +6,8 @@ def ece(probs, labels, n_bins=15):
     probs, labels = np.asarray(probs).ravel(), np.asarray(labels).ravel()
     bins = np.linspace(0, 1, n_bins + 1)
     e, n = 0.0, len(probs)
-    for lo, hi in zip(bins[:-1], bins[1:]):
-        m = (probs > lo) & (probs <= hi)
+    for i, (lo, hi) in enumerate(zip(bins[:-1], bins[1:])):
+        m = (probs >= lo) & (probs <= hi) if i == 0 else (probs > lo) & (probs <= hi)
         if m.sum() == 0:
             continue
         conf, acc = probs[m].mean(), labels[m].mean()

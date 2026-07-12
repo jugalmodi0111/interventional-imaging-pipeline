@@ -20,7 +20,7 @@ def _mask_dirs(root):
         hit = glob.glob(os.path.join(root, "**", f"*{name}*"), recursive=True)
         hit = [h for h in hit if os.path.isdir(h)]
         if hit:
-            dirs[idx] = hit[0]
+            dirs[idx] = hit
     return dirs
 
 
@@ -30,10 +30,11 @@ def _from_masks(root, size):
         return 0
     # index masks by frame stem across classes
     frames = {}
-    for idx, d in dirs.items():
-        for mp in glob.glob(os.path.join(d, "*")):
-            stem = os.path.splitext(os.path.basename(mp))[0]
-            frames.setdefault(stem, []).append((idx, mp))
+    for idx, mask_dirs in dirs.items():
+        for d in mask_dirs:
+            for mp in glob.glob(os.path.join(d, "*")):
+                stem = os.path.splitext(os.path.basename(mp))[0]
+                frames.setdefault(stem, []).append((idx, mp))
     n = 0
     for stem, items in frames.items():
         ip = io.resolve_image(root, stem + ".png") or io.resolve_image(root, stem + ".jpg")
@@ -48,8 +49,9 @@ def _from_masks(root, size):
 def _from_img_mask_pairs(root, size):
     """CathAction human_dataset_train layout: <root>/**/img/<stem>.<ext> +
     <root>/**/mask/<stem>_mask.png (one merged mask per frame, NOT per-class dirs).
-    If a mask carries >1 distinct nonzero value we split those into classes; otherwise all
-    foreground -> class 0. Returns frames converted."""
+    Nonzero values in 1..N are treated as class codes (catheter=1->0, guidewire=2->1) so a
+    single-class frame keeps its true class; any other coding falls back to foreground=class 0.
+    Returns frames converted."""
     img_dirs  = [d for d in glob.glob(os.path.join(root, "**", "img"),  recursive=True) if os.path.isdir(d)]
     mask_dirs = [d for d in glob.glob(os.path.join(root, "**", "mask"), recursive=True) if os.path.isdir(d)]
     if not img_dirs or not mask_dirs:
@@ -68,9 +70,9 @@ def _from_img_mask_pairs(root, size):
         if m is None:
             continue
         vals = [int(v) for v in np.unique(m) if v != 0]
-        if 1 < len(vals) <= len(NAMES):                          # e.g. catheter=1, guidewire=2
-            class_masks = [(i, (m == v).astype("uint8")) for i, v in enumerate(sorted(vals))]
-        else:                                                    # single merged mask -> class 0
+        if vals and all(1 <= v <= len(NAMES) for v in vals):     # class-coded: catheter=1, guidewire=2
+            class_masks = [(v - 1, (m == v).astype("uint8")) for v in sorted(vals)]
+        else:                                                    # binary/merged mask -> class 0
             class_masks = [(0, (m > 0).astype("uint8"))]
         n += io.masks_to_yolo(ip, class_masks, OUT, size)
     return n

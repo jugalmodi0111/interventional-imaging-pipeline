@@ -97,12 +97,13 @@ def train(cfg, project=None, data_yaml=None, device=0):
 def _gdino_seed_round(cfg, project, data_yaml, unlabeled_dir=None, device=0):
     """Round-0 cold start: Grounding DINO open-vocab labels the unlabeled frames -> YOLO labels in
     the train split, then retrain from scratch. Heavy: GD (torch/transformers) loads lazily here."""
-    import shutil
     import cv2
     from ultralytics import YOLO
+    from src.data_prep import io_utils as io
     from src.data_prep.autolabel_gdino import detect, filter_detections
     ssl = cfg.get("ssl", {})
     conf = ssl.get("conf", 0.4)
+    size = (_detector(cfg) or {}).get("imgsz", 640)
     prompt, class_map = seed_prompt_and_classes(cfg)
     unlabeled_dir = unlabeled_dir or ssl.get("unlabeled_dir", "data/raw/xcad")
     imgs = glob.glob(os.path.join(unlabeled_dir, "**", "*.png"), recursive=True)
@@ -124,7 +125,8 @@ def _gdino_seed_round(cfg, project, data_yaml, unlabeled_dir=None, device=0):
         if not lines:
             continue
         stem = "gd_" + os.path.splitext(os.path.basename(ip))[0]
-        shutil.copy(ip, os.path.join(out_i, stem + ".png"))
+        cv2.imwrite(os.path.join(out_i, stem + ".png"),           # CLAHE+resize to match base/inference
+                    cv2.resize(io.clahe_unsharp(g), (size, size)))
         open(os.path.join(out_l, stem + ".txt"), "w").write("\n".join(lines))
         kept += 1
     print(f"GD-seed: added {kept} Grounding-DINO-labeled frames; retraining")
@@ -135,9 +137,14 @@ def _gdino_seed_round(cfg, project, data_yaml, unlabeled_dir=None, device=0):
 
 
 def _pseudo_label_round(weights, cfg, project, data_yaml, unlabeled_dir=None, device=0):
-    """Predict on unlabeled frames >= conf, write YOLO pseudo-labels into the train split, retrain."""
+    """Predict on unlabeled frames >= conf, write YOLO pseudo-labels into the train split, retrain.
+    Frames are CLAHE+resized before predict AND on disk so the pseudo-labels match the base-train and
+    inference preprocessing; the predicted class id is kept (not forced to 0) for multi-class tasks."""
+    import cv2
     from ultralytics import YOLO
+    from src.data_prep import io_utils as io
     conf = cfg["ssl"].get("conf", 0.4)
+    size = (_detector(cfg) or {}).get("imgsz", 640)
     unlabeled_dir = unlabeled_dir or cfg.get("ssl", {}).get("unlabeled_dir", "data/raw/xcad")
     imgs = glob.glob(os.path.join(unlabeled_dir, "**", "*.png"), recursive=True)
     if not imgs:
@@ -149,14 +156,18 @@ def _pseudo_label_round(weights, cfg, project, data_yaml, unlabeled_dir=None, de
     out_l = os.path.join(proc, "labels/train")
     os.makedirs(out_i, exist_ok=True); os.makedirs(out_l, exist_ok=True)
     kept = 0
-    for res in model.predict(imgs, conf=conf, stream=True, verbose=False, device=device):
-        b = res.boxes
+    for ip in imgs:
+        g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
+        if g is None:
+            continue
+        frame = cv2.resize(io.clahe_unsharp(g), (size, size))    # match base/inference preprocessing
+        b = model.predict(frame, conf=conf, verbose=False, device=device)[0].boxes
         if b is None or len(b) == 0:
             continue
-        stem = "pl_" + os.path.splitext(os.path.basename(res.path))[0]
-        import shutil
-        shutil.copy(res.path, os.path.join(out_i, stem + ".png"))
-        lines = [f"0 {x:.6f} {y:.6f} {w:.6f} {h:.6f}" for x, y, w, h in b.xywhn.tolist()]
+        stem = "pl_" + os.path.splitext(os.path.basename(ip))[0]
+        cv2.imwrite(os.path.join(out_i, stem + ".png"), frame)
+        lines = [f"{int(c)} {x:.6f} {y:.6f} {w:.6f} {h:.6f}"
+                 for c, (x, y, w, h) in zip(b.cls.tolist(), b.xywhn.tolist())]
         open(os.path.join(out_l, stem + ".txt"), "w").write("\n".join(lines))
         kept += 1
     print(f"SSL: added {kept} pseudo-labeled frames; retraining")

@@ -64,6 +64,7 @@ def _scores(student, loader, device=None):
     """Mean Dice/clDice of the (thresholded) student over a loader. Lazy torch."""
     import torch
     from src.eval import metrics
+    device = device or next(student.parameters()).device   # else x.to(None) no-op vs a cuda model -> crash
     student.eval(); ds, cs = [], []
     with torch.no_grad():
         for x, y, _ in loader:
@@ -82,11 +83,13 @@ def train(cfg, processed_dir="data/processed/coronary",
 
     Heavy path (torch + nnU-Net CLI) only runs on the GPU box; every heavy import is lazy so this
     module stays importable without them."""
+    import torch
     from torch.utils.data import DataLoader
     from src.models.seg_student import TinyUNet
     from src.models.distill import TeacherCacheDataset, distill
     from src.data_prep import io_utils as io, dca1_to_nnunet
 
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     size = cfg.get("preprocess", {}).get("size", 512)
     did, name = dataset_id_and_name(cfg)
     raw = os.path.join(os.environ.get("nnUNet_raw", "data/nnUNet_raw"), name)
