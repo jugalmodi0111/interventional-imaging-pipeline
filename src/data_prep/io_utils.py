@@ -9,16 +9,24 @@ import glob, hashlib, json, os, re
 import cv2, numpy as np
 from src.data_prep.preprocess import clahe_unsharp
 
-# Danilov frames are named <site>_<patient>_<seq>_<frame> (e.g. 14_002_5_0016). Consecutive
-# frames are near-identical, so a per-frame split leaks the same lesion into train AND val.
-# Group by <site>_<patient> so every frame of a patient lands in the same split (honest holdout).
+# Video-derived frames are near-identical between consecutive frames, so a per-frame split leaks
+# the same sequence into train AND val. Collapse every frame of one source sequence to a single
+# group so it lands entirely on one side (honest holdout):
+#   Danilov    <site>_<patient>_<seq>_<frame>  (e.g. 14_002_5_0016)          -> <site>_<patient>
+#   CathAction <clip>_img-<seg>-<frame>        (e.g. JFQ_j3383201_img-00000-0042) -> <clip>
 _PATIENT_RE = re.compile(r"^(\d+_\d+)_\d+_\d+$")
+_CLIP_RE = re.compile(r"^(.+?)_img-\d+-\d+$")
 
 
 def group_key(name):
-    """Split-group key: Danilov -> patient (site_patient); everything else -> the name itself."""
+    """Split-group key: collapse a source sequence's frames to one key; else the name itself."""
     m = _PATIENT_RE.match(name)
-    return m.group(1) if m else name
+    if m:
+        return m.group(1)
+    m = _CLIP_RE.match(name)
+    if m:
+        return m.group(1)
+    return name
 
 
 def ensure(*ds):
