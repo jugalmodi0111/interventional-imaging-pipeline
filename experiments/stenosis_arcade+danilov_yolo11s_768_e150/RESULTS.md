@@ -11,9 +11,10 @@
 |---|---|---|---|---|---|---|
 | **best F1** | 80 | 0.963 | 0.818 | **0.885** | 0.868 | 0.411 |
 | best mAP50 | 77 | 0.961 | 0.816 | 0.882 | **0.871** | 0.415 |
+| best.pt (fitness) | 71 | 0.954 | 0.810 | 0.876 | 0.866 | 0.417 |
 | last | 101 | 0.947 | 0.821 | 0.879 | 0.855 | 0.407 |
 
-- Ran **101/150 epochs** (12 h Kaggle wall cut it; metrics had plateaued ~ep50).
+- Ran **101/150 epochs** in 6.4 h — early-stopped by `patience=30` (best fitness at epoch 71, no improvement through 101). Well under the 12 h Kaggle wall; metrics had plateaued ~ep50.
 - **vs baseline** (arcade-only 11n/640): F1 0.246 → 0.885, mAP50 0.147 → 0.87.
 - Gate `F1 ≥ 0.57`: **PASS on paper.** Recall peaks 0.829 → still misses ~17 % of stenoses (recall is the clinically costly axis).
 
@@ -50,4 +51,4 @@ Danilov ships **8325 frames from ~100 patients** (`<site>_<patient>_<seq>_<frame
 
 ## Artifacts
 - `results.csv` — full 101-epoch curve (this folder).
-- `best.pt` — weights (gitignored; on Kaggle output + local `outputs/output_stenosis/best.pt`). **Trained on the leaky split — retrain after the fix before shipping.**
+- `best.pt` — epoch-71 weights, fitness-selected (gitignored; on Kaggle output + local `outputs/output_stenosis/best.pt`). **Trained on the leaky split — retrain after the fix before shipping.**
