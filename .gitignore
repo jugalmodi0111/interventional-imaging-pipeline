@@ -20,3 +20,8 @@ outputs/**/best-stenosis/
 nnUNet_raw/
 nnUNet_preprocessed/
 nnUNet_results/
+
+# Kaggle kernel-output dumps embed a full clone of this repo; never track those
+outputs/**/interventional-imaging-pipeline/
+outputs/coronary_nb/
+.pytest_cache/
