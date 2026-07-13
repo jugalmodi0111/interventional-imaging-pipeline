@@ -1,8 +1,10 @@
 task: stenosis_detection
 datasets:
   arcade_stenosis: {root: data/raw/arcade/stenosis, task: 2, format: coco}   # stenosis split only
-  danilov:         {root: data/raw/danilov, format: coco}     # 8325 imgs
+  danilov:         {root: data/raw/danilov, format: coco, max_frames_per_patient: 5}   # cap 5/patient: 64 patients/8325 frames dilute the honest metric (arcade-only 0.246 > +danilov 0.214)
+  cadica:          {root: data/raw/cadica, format: native}     # 2024 patient-diverse lesion angiography; run cadica_to_yolo prep to include (patients > frames)
 model: {name: yolo11s, imgsz: 768, pretrained: true}          # 's' + 768: cross the F1 floor (nano/640 sat at 0.25). Still edge-deployable.
+# model.pretrained_weights: runs/ssl/xca_backbone.pt          # SSL/angiography-pretrained backbone drop-in (produce GPU-side; loaded strict=False before train)
 # if T4 OOMs at 768/batch16: drop train.batch to 8 (or set -1 for auto).
 ssl:   {pseudo_label: true, conf: 0.4}                        # semi-supervised boost
 # ssl.seed: gdino  -> open-vocab Grounding DINO cold-start on unlabeled frames before self-training
@@ -10,5 +12,7 @@ ssl:   {pseudo_label: true, conf: 0.4}                        # semi-supervised 
 train: {epochs: 150, batch: 16, lr: 1.0e-3,
         cache: true, workers: 8, patience: 30, amp: true}     # speed: RAM cache + AMP + early-stop (quality-neutral)
 metrics: [coco_ap, f1]
-target: {f1: 0.57}                                            # beat ARCADE leaderboard
+val:    {conf: 0.001}                                         # low eval conf so recall (the costly axis) isn't throttled; add val.iou to override NMS IoU
+target: {f1: 0.57}                                            # F1 floor. NOTE: ARCADE stenosis SOTA ~0.5 -> 0.57 may exceed published; confirm with clinical stakeholders.
+# target: {f1: 0.57, recall: 0.60}                            # recall-first gate: a missed stenosis is the deadly error. Uncomment + set the clinical recall floor to enable.
 export: {onnx: true, int8: true, tensorrt: false}

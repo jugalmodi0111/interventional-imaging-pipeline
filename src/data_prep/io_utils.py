@@ -41,6 +41,38 @@ def split_of(name, val_frac=0.15):
     return "val" if h < val_frac * 1000 else "train"
 
 
+def cap_frames_per_patient(stems, k, key_fn=group_key):
+    """Keep at most ``k`` stems per patient group, EVENLY SPACED across each group's sorted frames.
+
+    Danilov ships ~8325 near-identical frames from only 64 patients; keeping every frame dilutes the
+    honest per-patient metric with redundant almost-duplicates. This caps each ``key_fn(stem)`` group
+    to ``k`` frames chosen at evenly-spaced indices from ``0`` to ``m-1`` (both endpoints included),
+    so the retained frames still span the whole clip's temporal range — strictly better coverage than
+    first-``k``, which biases to the start of a sequence. Fully deterministic (sorted + arithmetic
+    index selection, no RNG). ``k=None`` -> no cap (all stems returned, sorted). Returns the kept
+    stems as a sorted list.
+    """
+    if k is None:
+        return sorted(stems)
+    groups = {}
+    for s in stems:
+        groups.setdefault(key_fn(s), []).append(s)
+    kept = []
+    for key in sorted(groups):
+        frames = sorted(groups[key])
+        m = len(frames)
+        if m <= k:
+            kept.extend(frames)
+            continue
+        idxs = [m // 2] if k == 1 else [round(i * (m - 1) / (k - 1)) for i in range(k)]
+        seen = set()
+        for j in idxs:                       # dedupe defensively (indices are distinct for k<=m)
+            if j not in seen:
+                seen.add(j)
+                kept.append(frames[j])
+    return sorted(kept)
+
+
 def write_pair(img_gray, mask, stem, out_dir, size=512, clahe=True):
     ensure(os.path.join(out_dir, "img"), os.path.join(out_dir, "msk"))
     im = clahe_unsharp(img_gray) if clahe else img_gray

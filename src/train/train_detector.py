@@ -105,9 +105,56 @@ def best_f1_from_pr(precision_arr, recall_arr):
 
 
 def qualifies_det(scores, cfg):
-    """True iff scores['f1'] clears the F1 floor cfg['target']['f1'] (default 0.57, inclusive)."""
-    floor = (cfg.get("target") or {}).get("f1", 0.57)
-    return float(scores.get("f1") or 0.0) >= float(floor)
+    """True iff scores['f1'] clears the F1 floor cfg['target']['f1'] (default 0.57, inclusive) AND,
+    when cfg['target']['recall'] is set, scores['recall'] clears that recall floor too (inclusive).
+
+    Recall is the clinically costly axis for stenosis — a missed lesion is the dangerous error — so a
+    config can demand a minimum recall on TOP of F1. An unset target.recall leaves the F1-only
+    behaviour untouched. Mirrors train_seg.qualifies (Dice floor + optional second gate). PURE
+    (config-only), torch-free so the floor is unit-tested with no GPU val run."""
+    tgt = cfg.get("target") or {}
+    if float(scores.get("f1") or 0.0) < float(tgt.get("f1", 0.57)):
+        return False
+    rfloor = tgt.get("recall")
+    if rfloor is not None and float(scores.get("recall") or 0.0) < float(rfloor):
+        return False
+    return True
+
+
+def det_scores(precision, recall, map50, map=None):
+    """Recall-first score dict from an ultralytics val result's box means (val.box.mp/mr/map50/map).
+
+    Returns {'precision','recall','f1','map50'[,'map']} with F1 = 2PR/(P+R), guarded so P+R==0 -> 0.0
+    (a model that fires nowhere scores F1 0, not a div error). Recall is surfaced deliberately because
+    for stenosis a missed lesion (low recall) is the clinically costly error. PURE/torch-free so the
+    F1 math + the gate are unit-tested with no GPU val run."""
+    p, r = float(precision or 0.0), float(recall or 0.0)
+    denom = p + r
+    f1 = (2.0 * p * r / denom) if denom > 0 else 0.0         # guard P=R=0
+    out = {"precision": p, "recall": r, "f1": f1, "map50": float(map50 or 0.0)}
+    if map is not None:
+        out["map"] = float(map)
+    return out
+
+
+def val_kwargs(cfg):
+    """Kwargs for the final ultralytics .val() call. Exposes a LOW default conf so recall isn't
+    throttled at eval: ultralytics' default val conf (0.001) is fine, but if a config over-raises it
+    the low-confidence true stenoses get dropped and recall (the costly axis) tanks. cfg['val']['conf']
+    (default 0.001) and optional cfg['val']['iou'] flow through. PURE/torch-free."""
+    v = cfg.get("val") or {}
+    kw = {"conf": v.get("conf", 0.001)}
+    if v.get("iou") is not None:
+        kw["iou"] = v.get("iou")
+    return kw
+
+
+def pretrained_ckpt(cfg):
+    """Path to an SSL/angiography-pretrained backbone checkpoint (cfg['model']['pretrained_weights']),
+    or None. The drop-in point for a backbone pretrained GPU-side (e.g. self-supervised on unlabeled
+    XCA) — set the key and train() loads it (strict=False) before training, no flow changes needed.
+    PURE/torch-free."""
+    return (cfg.get("model") or {}).get("pretrained_weights")
 
 
 def train(cfg, project=None, data_yaml=None, device=0):
@@ -118,6 +165,7 @@ def train(cfg, project=None, data_yaml=None, device=0):
     project = project or f"runs/{'catheter' if 'catheter' in cfg.get('task','') else 'stenosis'}"
     tk = train_kwargs(cfg)                                    # imgsz/epochs/batch/lr0 + cache/workers/patience/amp
     model = YOLO(m["name"] + ".pt")
+    _load_pretrained_backbone(model, cfg)                    # optional SSL/angiography-pretrained init
     model.train(data=data_yaml, project=project, name="base", exist_ok=True, device=device, **tk)
     best = os.path.join(project, "base", "weights", "best.pt")
 
@@ -139,7 +187,7 @@ def train(cfg, project=None, data_yaml=None, device=0):
         else:
             print("SSL pseudo-label skipped: no disjoint ssl.unlabeled_dir")
 
-    val = YOLO(best).val(data=data_yaml, device=device)
+    val = YOLO(best).val(data=data_yaml, device=device, **val_kwargs(cfg))   # low val conf: don't throttle recall
     box = val.box
     p_arr, r_arr = getattr(box, "p", None), getattr(box, "r", None)
     if p_arr is not None and r_arr is not None and len(p_arr) and len(r_arr):
@@ -147,12 +195,45 @@ def train(cfg, project=None, data_yaml=None, device=0):
     else:                                                    # fall back to mean-P/mean-R scalars
         f1 = best_f1_from_pr([float(getattr(box, "mp", 0.0) or 0.0)],
                              [float(getattr(box, "mr", 0.0) or 0.0)])
+    # recall-first report from the val box means; gate on the F1-maximizing operating point (the
+    # best-over-PR-curve F1 when it beats the mean-P/mean-R F1 — that's the point the floor is on).
+    scores = det_scores(getattr(box, "mp", 0.0), getattr(box, "mr", 0.0),
+                        getattr(box, "map50", 0.0), map=getattr(box, "map", None))
+    scores["f1"] = max(scores["f1"], f1)
     floor = (cfg.get("target") or {}).get("f1", 0.57)
-    ok = qualifies_det({"f1": f1}, cfg)
-    print("best:", best, "| F1:", round(f1, 4), "| mAP50:", round(float(box.map50), 4))
+    rfloor = (cfg.get("target") or {}).get("recall")
+    ok = qualifies_det(scores, cfg)
+    print("best:", best, "| scores:", {k: round(v, 4) for k, v in scores.items()})
     print("qualifies_det:", ok)
-    print(f"[{'PASS' if ok else 'FAIL'}] F1 {round(f1, 4)} {'>=' if ok else '<'} floor {floor}")
+    print(f"[{'PASS' if ok else 'FAIL'}] recall {round(scores['recall'], 4)}"
+          + (f" {'>=' if scores['recall'] >= rfloor else '<'} {rfloor}" if rfloor is not None else " (no floor)")
+          + f" | F1 {round(scores['f1'], 4)} {'>=' if scores['f1'] >= floor else '<'} floor {floor}")
     return best
+
+
+def _load_pretrained_backbone(model, cfg):
+    """Load cfg['model']['pretrained_weights'] into the YOLO model (strict=False) BEFORE training —
+    the drop-in point for an SSL/angiography-pretrained backbone produced GPU-side. No-op when the key
+    is unset. Lazy torch (module stays importable without it); prints matched/total key counts; a
+    missing file or shape mismatch is reported, not fatal (training just continues from default init)."""
+    ckpt = pretrained_ckpt(cfg)
+    if not ckpt:
+        return
+    if not os.path.exists(ckpt):
+        print(f"pretrained_weights: {ckpt} not found; using default init")
+        return
+    import torch
+    sd = torch.load(ckpt, map_location="cpu")
+    if isinstance(sd, dict):                                 # unwrap common checkpoint envelopes
+        sd = sd.get("state_dict", sd.get("model", sd))
+    if hasattr(sd, "state_dict"):                            # a pickled nn.Module (e.g. a YOLO ckpt)
+        sd = sd.state_dict()
+    tgt = model.model                                        # underlying torch nn.Module
+    tsd = tgt.state_dict()
+    matched = {k: v for k, v in sd.items() if k in tsd and tsd[k].shape == v.shape}
+    tsd.update(matched)
+    tgt.load_state_dict(tsd, strict=False)
+    print(f"pretrained_weights: loaded {len(matched)}/{len(tsd)} matching keys from {ckpt} (strict=False)")
 
 
 def _gdino_seed_round(cfg, project, data_yaml, unlabeled_dir=None, device=0):

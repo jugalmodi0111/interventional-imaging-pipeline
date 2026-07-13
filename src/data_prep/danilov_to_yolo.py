@@ -33,11 +33,18 @@ def _voc_box(obj, W, H):
     return f"0 {((x1 + x2) / 2) / W:.6f} {((y1 + y2) / 2) / H:.6f} {(x2 - x1) / W:.6f} {(y2 - y1) / H:.6f}"
 
 
-def _danilov_native(root, out_dir, size):
+def _danilov_native(root, out_dir, size, max_frames_per_patient=None):
     """Danilov (Mendeley ydrm75xywg) ships boxes as Pascal-VOC XML or YOLO .txt. Map all
-    severity classes (small/medium/large) -> single 'stenosis' class 0. Returns count."""
+    severity classes (small/medium/large) -> single 'stenosis' class 0. Returns count.
+
+    ``max_frames_per_patient`` (None = keep all) caps each patient (``group_key`` = ``<site>_<patient>``)
+    to at most that many EVENLY-SPACED frames, so the ~8325 near-duplicate frames from 64 patients
+    can't dilute the honest per-patient metric. Only the retained frames are written."""
     n = 0
     imgidx = _index_images(root)   # build once; O(1) lookups below
+    allowed = None
+    if max_frames_per_patient is not None:
+        allowed = set(io.cap_frames_per_patient(_danilov_stems(root), max_frames_per_patient))
     # (1) Pascal-VOC XML
     for xp in glob.glob(os.path.join(root, "**", "*.xml"), recursive=True):
         try:
@@ -49,12 +56,14 @@ def _danilov_native(root, out_dir, size):
              imgidx.get(os.path.splitext(os.path.basename(xp))[0])
         if not ip:
             continue
+        stem = os.path.splitext(os.path.basename(ip))[0]
+        if allowed is not None and stem not in allowed:
+            continue
         g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
         if g is None:
             continue
         H, W = g.shape
         lines = [_voc_box(o, W, H) for o in t.findall("object") if o.find("bndbox") is not None]
-        stem = os.path.splitext(os.path.basename(ip))[0]
         sp = io.split_of(stem)
         io.ensure(os.path.join(out_dir, "images", sp), os.path.join(out_dir, "labels", sp))
         cv2.imwrite(os.path.join(out_dir, "images", sp, stem + ".png"),
@@ -70,6 +79,8 @@ def _danilov_native(root, out_dir, size):
         stem = os.path.splitext(os.path.basename(tp))[0]
         ip = imgidx.get(stem)
         if not ip:
+            continue
+        if allowed is not None and stem not in allowed:
             continue
         g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
         if g is None:
@@ -109,7 +120,8 @@ def main(cfg):
                   f"e.g. {list(dupes)[:5]}")
         c = io.coco_to_yolo(d["root"], OUT, size=size, class_id=0)   # COCO path (both if present)
         if c == 0 and key == "danilov":
-            c = _danilov_native(d["root"], OUT, size)
+            # max_frames_per_patient (cfg default None) caps redundant per-patient frames.
+            c = _danilov_native(d["root"], OUT, size, d.get("max_frames_per_patient"))
         print(f"{key}: {c} images")
         total += c
     if total == 0:

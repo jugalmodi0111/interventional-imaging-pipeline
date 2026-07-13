@@ -4,6 +4,7 @@ prep-coronary:
 	$(PY) -m src.data_prep.dca1_to_nnunet --config configs/coronary_seg.yaml
 prep-stenosis:
 	$(PY) -m src.data_prep.danilov_to_yolo --config configs/stenosis_yolo.yaml
+	$(PY) -m src.data_prep.cadica_to_yolo --config configs/stenosis_yolo.yaml   # patient-diverse add (skips if cadica.root absent)
 train-coronary:
 	$(PY) -m src.train.train_seg --config configs/coronary_seg.yaml
 train-stenosis:
@@ -31,6 +32,7 @@ export-coreml-yolo:       # MODEL=runs/stenosis/.../weights/best.pt  (Ultralytic
 # --- Stenosis (YOLO stack) ---
 prep-stenosis-yolo:
 	$(PY) -m src.data_prep.danilov_to_yolo --config configs/stenosis_yolo.yaml
+	$(PY) -m src.data_prep.cadica_to_yolo --config configs/stenosis_yolo.yaml   # patient-diverse add (skips if cadica.root absent)
 train-detector:
 	$(PY) -m src.train.train_detector --config configs/stenosis_yolo.yaml
 
