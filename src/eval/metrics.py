@@ -34,6 +34,34 @@ def cldice(pred, gt, exclude_empty=True):
     tprec, tsens = _tprec(sp, gt), _tprec(sg, pred)
     return 2 * tprec * tsens / (tprec + tsens + 1e-6)
 
+def vessel_distance_heatmap(gt, r_th=8):
+    """GT binary mask -> (D_gt heatmap in [0,1], GT skeleton as float). D_gt is 1 on the skeleton and
+    decays LINEARLY to 0 at r_th px away (CLGeoDice paper Eq.1). Empty GT -> zeros. skimage/scipy lazy."""
+    from skimage.morphology import skeletonize
+    from scipy.ndimage import distance_transform_edt as edt
+    gt = np.asarray(gt).astype(bool)
+    if gt.sum() == 0:
+        z = np.zeros(gt.shape, np.float32)
+        return z, z
+    sk = skeletonize(gt)
+    dgt = np.clip(1.0 - edt(~sk) / float(r_th), 0.0, 1.0).astype(np.float32)
+    return dgt, sk.astype(np.float32)
+
+def clgeodice(pred, gt, r_th=8, eps=1e-6, exclude_empty=True):
+    """CLGeoDice score (Chen et al. 2026) — geometry+topology-aware, a clDice successor that rewards
+    the predicted centerline for lying NEAR the GT centerline via a continuous distance heatmap
+    (clDice only rewards exact skeleton overlap and is blind to in-lumen drift). Higher = better.
+    Empty GT -> NaN (aggregate with np.nanmean), like dice/cldice. skimage/scipy lazy."""
+    from skimage.morphology import skeletonize
+    pred_b, gt_b = np.asarray(pred).astype(bool), np.asarray(gt).astype(bool)
+    if exclude_empty and gt_b.sum() == 0:
+        return float("nan")
+    dgt, s_true = vessel_distance_heatmap(gt_b, r_th)
+    s_pred = skeletonize(pred_b).astype(np.float32)
+    tgp = (s_pred * dgt).sum() / (s_pred.sum() + eps)          # geometric topological precision
+    tsn = (s_true * pred_b.astype(np.float32)).sum() / (s_true.sum() + eps)   # topological sensitivity
+    return float(2 * tgp * tsn / (tgp + tsn + eps))
+
 def hd95(pred, gt):
     pred, gt = pred.astype(bool), gt.astype(bool)
     if pred.sum() == 0 or gt.sum() == 0:

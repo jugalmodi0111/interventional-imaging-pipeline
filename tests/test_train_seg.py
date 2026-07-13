@@ -33,7 +33,8 @@ def test_student_kwargs_defaults_when_missing():
 
 # ---- distill_kwargs ---------------------------------------------------------
 def test_distill_kwargs_maps_temperature_to_T_and_pulls_train_fields():
-    assert T.distill_kwargs(CFG) == {"alpha": 0.5, "T": 2.0, "epochs": 200, "lr": 1e-3, "amp": True}
+    assert T.distill_kwargs(CFG) == {"alpha": 0.5, "T": 2.0, "epochs": 200, "lr": 1e-3, "amp": True,
+                                     "clgeo_weight": 0.0, "clgeo_r_th": 8}
 
 
 def test_distill_kwargs_drops_keys_distill_does_not_accept():
@@ -43,7 +44,8 @@ def test_distill_kwargs_drops_keys_distill_does_not_accept():
 
 
 def test_distill_kwargs_defaults_when_missing():
-    assert T.distill_kwargs({}) == {"alpha": 0.5, "T": 2.0, "epochs": 200, "lr": 1e-3, "amp": True}
+    assert T.distill_kwargs({}) == {"alpha": 0.5, "T": 2.0, "epochs": 200, "lr": 1e-3, "amp": True,
+                                    "clgeo_weight": 0.0, "clgeo_r_th": 8}
 
 
 # ---- dataset_id_and_name ----------------------------------------------------

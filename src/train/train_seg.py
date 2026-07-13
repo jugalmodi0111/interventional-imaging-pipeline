@@ -17,7 +17,8 @@ def distill_kwargs(cfg):
     """Only the kwargs distill() accepts: temperature->T, alpha, + train epochs/lr/amp."""
     d, tr = cfg.get("distill", {}), cfg.get("train", {})
     return {"alpha": d.get("alpha", 0.5), "T": d.get("temperature", 2.0),
-            "epochs": tr.get("epochs", 200), "lr": tr.get("lr", 1e-3), "amp": tr.get("amp", True)}
+            "epochs": tr.get("epochs", 200), "lr": tr.get("lr", 1e-3), "amp": tr.get("amp", True),
+            "clgeo_weight": d.get("clgeodice_weight", 0.0), "clgeo_r_th": d.get("clgeodice_r_th", 8)}
 
 
 def dataset_id_and_name(cfg, did=1):
@@ -100,19 +101,20 @@ def _scores(student, loader, device=None):
     import torch
     from src.eval import metrics
     device = device or next(student.parameters()).device   # else x.to(None) no-op vs a cuda model -> crash
-    student.eval(); ds, cs = [], []
+    student.eval(); ds, cs, gs = [], [], []
     with torch.no_grad():
         for x, y, _ in loader:
             pred = (torch.sigmoid(student(x.to(device))) > 0.5).cpu().numpy()
             for pi, gi in zip(pred, y.numpy()):
                 ds.append(metrics.dice(pi[0], gi[0])); cs.append(metrics.cldice(pi[0], gi[0]))
+                gs.append(metrics.clgeodice(pi[0], gi[0]))
     student.train()
-    # metrics.dice/cldice return NaN on empty-GT frames (trivial, no vessel to score); drop them
-    # so a single empty frame can't poison the mean into NaN and false-pass the gate (nan<0.75 is False).
+    # metrics return NaN on empty-GT frames (trivial, no vessel to score); drop them so a single
+    # empty frame can't poison the mean into NaN and false-pass the gate (nan<0.75 is False).
     def mean(a):
         v = [x for x in a if x == x]
         return sum(v) / len(v) if v else 0.0
-    return {"dice": mean(ds), "cldice": mean(cs)}
+    return {"dice": mean(ds), "cldice": mean(cs), "clgeodice": mean(gs)}
 
 
 def train(cfg, processed_dir="data/processed/coronary",

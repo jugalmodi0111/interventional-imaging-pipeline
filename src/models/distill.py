@@ -72,8 +72,13 @@ class TeacherCacheDataset(Dataset):
 
 
 def distill(student, loader, epochs=200, lr=1e-3, alpha=0.5, T=2.0, device=None,
-            amp=True, eval_fn=None, ckpt="runs/coronary/student.pt"):
-    """Train student against cached teacher logits. Saves a STATE_DICT (portable Mac handoff)."""
+            amp=True, eval_fn=None, ckpt="runs/coronary/student.pt",
+            clgeo_weight=0.0, clgeo_r_th=8):
+    """Train student against cached teacher logits. Saves a STATE_DICT (portable Mac handoff).
+
+    clgeo_weight>0 adds a CLGeoDice topology+geometry term (`src.models.clgeodice`) on the GT masks
+    to the KD loss — targets thin-vessel connectivity, the Stage-1 hard part. Default 0.0 = KD-only
+    (unchanged). Training-only; the exported student is identical (no new inference cost)."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = amp and device == "cuda"
     student.to(device).train()
@@ -85,7 +90,12 @@ def distill(student, loader, epochs=200, lr=1e-3, alpha=0.5, T=2.0, device=None,
             x, y, tl = x.to(device), y.to(device), tl.to(device)
             opt.zero_grad()
             with torch.amp.autocast("cuda", enabled=use_amp):
-                loss = kd_loss(student(x), tl, y, alpha, T)
+                logits = student(x)
+                loss = kd_loss(logits, tl, y, alpha, T)
+                if clgeo_weight > 0:                       # topology+geometry term on GT (thin vessels)
+                    from src.models.clgeodice import clgeodice_loss
+                    loss = loss + clgeo_weight * clgeodice_loss(torch.sigmoid(logits.float()), y,
+                                                                r_th=clgeo_r_th)
             scaler.scale(loss).backward(); scaler.step(opt); scaler.update()
             tot += loss.item()
         msg = f"epoch {ep + 1}/{epochs}  kd_loss {tot / max(1, len(loader)):.4f}"
