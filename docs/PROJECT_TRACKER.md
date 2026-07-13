@@ -21,7 +21,7 @@
 |---|---|---|---|---|
 | 0 | Setup + data prep | `~` partial | — | CLAHE walk **done**; edge-bench torch path still TODO |
 | 1 | Coronary segmentation | `~` trained; gate unverified | `student.pt`+onnx+int8 (2026-07-12) | driver ran, artifacts in `outputs/coronary_student/`; **Dice/clDice NOT recorded — verify gate** |
-| 2 | Stenosis detection | `~` ready-to-run | none | data on disk, trainer coded, not run |
+| 2 | Stenosis detection | `!` below floor | honest `best.pt` (F1 0.214) | patient-grouped re-run done 2026-07-13 → **F1 0.214 < 0.57 floor**; leakage confirmed, patient diversity is the bottleneck |
 | 2.5 | Calibration + abstention | `~` partial | — | ECE coded; reliability/temp-scale/OOD are TODO |
 | 3 | Temporal + catheter tracking | `x` **done** | `best-catheter.pt` + 4 provenance zips | detection+track complete |
 | 3b | Cross-vendor validation | `!` blocked | — | eval harness is a TODO shell |
@@ -29,7 +29,7 @@
 | 5 | Regulatory / intended-use gate | `[ ]` not started | — | name before any non-research use |
 | GD | **Grounding DINO labeler** (new) | `~` scaffolded | — | modules + pure helpers done (2026-07-11); SSL-seed wiring pending |
 
-**One-line summary:** Stage 3 (catheter) trained end-to-end. Stage 1 (coronary) driver **ran** — `student.pt`+onnx+int8 exist in `outputs/coronary_student/` (2026-07-12), but **Dice/clDice were not logged; the accuracy-floor gate is unverified**. Stage 2 (stenosis) has data + code ready; honest patient-grouped re-run still pending. Grounding DINO labeler is scaffolded (modules import torch-free, pure helpers unit-tested). Local test suite: **55 passing** (`pytest tests/`).
+**One-line summary:** Stage 3 (catheter) trained end-to-end. Stage 1 (coronary) driver **ran** — `student.pt`+onnx+int8 exist in `outputs/coronary_student/` (2026-07-12), but **Dice/clDice were not logged; the accuracy-floor gate is unverified**. Stage 2 (stenosis): honest patient-grouped re-run **done 2026-07-13 → F1 0.214, BELOW floor 0.57** (leakage confirmed; only 64 Danilov patients → data diversity is the bottleneck). Grounding DINO labeler is scaffolded (modules import torch-free, pure helpers unit-tested). Local test suite: **150 passing** (+3 skipped) (`pytest tests/`).
 
 ---
 
@@ -105,20 +105,22 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 - [~] **Second run done** (2026-07-12, Kaggle, `arcade+danilov_yolo11s_768_e150`): +Danilov (7861 train/1464 val), 11s, imgsz 768, 101/150 epochs (12h cap) → **F1 0.885, mAP50 0.87 — but per-frame split leaks Danilov video frames (every patient in both splits), so the number is inflated and NOT a trustworthy Stage-2 result.** Archived: [`experiments/stenosis_arcade+danilov_yolo11s_768_e150/`](../experiments/stenosis_arcade+danilov_yolo11s_768_e150/RESULTS.md)
 - [x] **Leakage fix**: `io_utils.split_of` now patient-grouped (`group_key`) so Danilov frames of a patient share a split; ARCADE unchanged; 47 tests pass
 - [x] **Leakage hard-gate in the notebook** (2026-07-12 c): `io_utils.audit_split_leakage()` + a new §3b cell in `kaggle_stenosis_plug_and_play.ipynb` **raise before training** if (a) any patient/clip group is in both train+val, or (b) Danilov frames were not actually collapsed by `group_key` (real filenames ≠ `<site>_<patient>_<seq>_<frame>` → silent per-frame leak). Danilov stem set is read from raw *independently of the regex* so a silent no-op can't pass. SSL pseudo-label auto-disabled unless a disjoint `ssl.unlabeled_dir` exists (else it re-leaks val frames into train). 55 tests pass.
-- [ ] **Re-run with patient-grouped split** → the honest F1 vs the 0.57 floor (best.pt above was trained on the leaky split — retrain before shipping). Notebook now blocks the run if the split would leak, so the F1 it reports is trustworthy by construction.
+- [x] **Re-run with patient-grouped split DONE** (2026-07-13, Kaggle `jugalmodi0111/stenosis`): honest split (train 8766/1349 groups, val 1059/215 groups; leakage check passed) → **F1 0.214, mAP50 0.108 — BELOW floor 0.57.** The 0.885 was ~all frame-leakage; Danilov's 8325 frames = only 64 patients, so patient diversity (not epochs/model) is the bottleneck. Archived: [`experiments/stenosis_arcade+danilov_yolo11s_768_grouped/`](../experiments/stenosis_arcade+danilov_yolo11s_768_grouped/RESULTS.md)
 - [ ] Run naming: `run_tag(cfg)` auto-names each run folder (no clobber); Kaggle notebook wired
 - [ ] Pseudo-label SSL round on unlabeled frames (raise recall)
 - [ ] Track COCO AP/AR on Danilov
 - [ ] Export to CoreML (`yolo_to_coreml.py`) + edge bench on Mac
 - **Accuracy floor gate:** F1 ≥ 0.55, **recall-weighted** (a missed stenosis is the costly error). Plain YOLO11n ~0.54 is below floor — step to `s` + SSL, or fall back to RT-DETR-R18.
 
-### 3.2.5 Stage 2.5 — Calibration + abstention  `~`
-- [x] `ece()` implemented
-- [ ] Reliability diagram plot
-- [ ] Post-hoc temperature scaling
-- [ ] OOD detector + coverage–risk (defer-to-human) curve; wire `CoronaryDominance` artifact/quality tags
-- [ ] Brier score reporting hookup
-- **Exit gate:** ECE < ~0.05 after temp-scaling; defer path demonstrably fires on OOD inputs (unfamiliar vendor/view/artifact).
+### 3.2.5 Stage 2.5 — Calibration + abstention  `~` → mostly done (2026-07-12 e)
+- [x] `ece()` implemented (NaN on empty, not fake-0)
+- [x] **Reliability diagram** — `reliability_curve()` (pure per-bin conf/acc/count) + `save_reliability_diagram()` (matplotlib-guarded PNG)
+- [x] **Post-hoc temperature scaling** — `temperature_scale()` (pure 1-D golden-section on BCE) + `apply_temperature()`. Verified: over-confident logits ECE 0.094 → **0.020** (< 0.05 gate)
+- [x] **OOD-AUROC + coverage–risk** — `coverage_risk()` (None at zero coverage), `auroc()` (tie-averaged Mann–Whitney), `ood_auroc()` + `uncertainty_score()` (`1-|2p-1|`). Demo OOD-AUROC 0.907
+- [x] **Brier** score (`brier()`)
+- [ ] Wire `CoronaryDominance` artifact/quality tags into the defer path (needs a scored model + the RAD-DINO classifier head)
+- [ ] Score a REAL model (Stage-1 seg or Stage-2 det) once weights land → record ECE/reliability/OOD on held-out
+- **Exit gate:** ECE < ~0.05 after temp-scaling *(math verified on synthetic; pending real-model numbers)*; defer path demonstrably fires on OOD inputs (unfamiliar vendor/view/artifact).
 
 ### 3.3 Stage 3 — Temporal + catheter tracking  `x` DONE (catheter) / `~` (DSA pending)
 - [x] Catheter/guidewire YOLO11n trained — `outputs/best-catheter.pt`, `last-catheter.pt`
@@ -201,7 +203,7 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 *Done 2026-07-11 (code-side, local, TDD): `preprocess.process_dir`; `train_seg.py` driver; `autolabel_gdino.py` + `grounded_sam.py`; GD Slot-2 SSL-seed wiring + detector speed knobs + notebook speedup. 45 tests passing. Remaining queue is GPU-run + wiring:*
 
 1. **[Stage 1 — coronary]** Driver already produced `student.pt`+onnx+int8 (2026-07-12) but **no Dice/clDice were logged** — re-eval (or re-run) to record the numbers and confirm the Dice ≥ 0.75 + clDice floor, **re-checked after INT8**.
-2. **[Stage 2 — stenosis]** Run `kaggle_stenosis_plug_and_play.ipynb` on Kaggle GPU (ARCADE + Danilov, yolo11s/768). → F1 ≥ 0.55 recall-weighted. Optionally flip `ssl.seed: gdino` for the open-vocab cold start.
+2. **[Stage 2 — stenosis]** ~~Run kaggle_stenosis_plug_and_play~~ **DONE 2026-07-13 → F1 0.214 < 0.57 floor.** Next lever is **patient diversity** (64 Danilov patients too few) + pseudo-label SSL / GD cold-start — not epochs/model. See archive RESULTS.md.
 3. **[Stage 1 refinement]** Extend `qualifies()` to require clDice within ~3% of teacher (not Dice-only).
 4. **[Stage 3 close-out]** Record catheter IoU/fps/ID-switch on device; export catheter → CoreML.
 5. **[Stage 2.5]** Finish `calibration.py` (reliability + temp-scaling + OOD) once ≥1 seg/det model exists to score.
@@ -210,6 +212,8 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 ---
 
 ## 8. Changelog
+- **2026-07-13** — **Honest stenosis re-run pulled + archived.** Kaggle `jugalmodi0111/stenosis` (ARCADE+Danilov, yolo11s/768, **patient-grouped split — leakage check PASSED**: train 8766/1349 groups, val 1059/215 groups, danilov 8325 frames→64 patients) → **F1 0.214 / mAP50 0.108, BELOW floor 0.57** (best.pt F1 0.2136). Confirms the 0.885 was ~all frame-leakage; Danilov is 8325 frames but only **64 patients**, so patient diversity (not epochs/model) is the bottleneck. Archived [`experiments/stenosis_arcade+danilov_yolo11s_768_grouped/`](../experiments/stenosis_arcade+danilov_yolo11s_768_grouped/RESULTS.md) (RESULTS.md + curves; best.pt gitignored). Full suite **150 passed / 3 skipped**.
+- **2026-07-12 (e)** — **Stage 2.5 calibration finished** (`src/eval/calibration.py`, pure numpy / torch-free). Added `reliability_curve` + `save_reliability_diagram` (matplotlib-guarded), `temperature_scale` (1-D golden-section on BCE) + `apply_temperature`, `auroc` (tie-averaged Mann–Whitney), `ood_auroc` + `uncertainty_score` (`1-|2p-1|`). Math verified: over-confident logits ECE **0.094 → 0.020** (< 0.05 gate), OOD-AUROC 0.907. Tests +7 (`tests/test_calibration_extra.py`); suite **150 passing** + 3 skimage-skipped. Stage 2.5 code-complete; remaining = score a real model once weights land + wire `CoronaryDominance` tags.
 - **2026-07-12 (d)** — **Training-hazard fixes landed** (6 parallel implementation agents, disjoint files, TDD; suite 58→**144 passing** + 3 skimage-skipped). Closes the hazards the (c) audit found:
   - **ARCADE stem collision → FIXED** (`io_utils.coco_to_yolo` + `coco_seg_to_pairs`): new pure `_disambiguated_stem()` prefixes the source split (`train_5`) only for basenames that collide across COCO jsons; Danilov/unique stems unchanged (group_key still collapses them). nnU-Net `numTraining` now globs actual `imagesTr` files (`arcade_to_coco`). No more silent data loss.
   - **Coronary held-out val → FIXED** (`train_seg`, `distill`): `TeacherCacheDataset(stems=…)` filter + `split_stems()` (patient-grouped via `split_of`) → distill on train stems, eval/gate on **val** stems (fallback+warn if val empty). No more eval-on-train.
