@@ -26,8 +26,10 @@ def _vessel_mask(seg_weights, gray, size=512, base=16, depth=4):
                       interpolation=cv2.INTER_NEAREST)
 
 
-def predict(image, detector, seg=None, out=None, conf=0.25, imgsz=640):
+def predict(image, detector, seg=None, out=None, conf=0.25, imgsz=640,
+            temperature=1.0, defer=False):
     from ultralytics import YOLO
+    from src.serve.stenosis_triage import triage_decision
     gray = cv2.imread(image, cv2.IMREAD_GRAYSCALE)
     assert gray is not None, f"cannot read image: {image}"
     vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
@@ -38,20 +40,30 @@ def predict(image, detector, seg=None, out=None, conf=0.25, imgsz=640):
 
     clahe_bgr = cv2.cvtColor(clahe_unsharp(gray), cv2.COLOR_GRAY2BGR)   # detector trained on CLAHE
     res = YOLO(detector).predict(clahe_bgr, conf=conf, imgsz=imgsz, verbose=False)[0]
-    n = 0
+    dets, n = [], 0
     for b in res.boxes:
         x1, y1, x2, y2 = map(int, b.xyxy[0].tolist()); s = float(b.conf[0])
         cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 0, 255), 2)
         cv2.putText(vis, f"blockage {s:.0%}", (x1, max(12, y1 - 6)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        dets.append((x1, y1, x2, y2, s))
         n += 1
+
+    # Triage-with-abstention: a below-floor detector must DEFER the uncertain frame, not be silently
+    # wrong. Computed always (adds deferred/reason to the result); temperature=1.0 is an exact no-op.
+    tri = triage_decision(dets, temperature=temperature)
+    deferred, reason = tri["deferred"], tri["reason"]
 
     banner = f"{n} blockage(s) detected" if n else "no blockage detected"
     cv2.putText(vis, banner, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    if defer and deferred:                                     # magenta DEFER banner: route to human
+        cv2.putText(vis, f"DEFER to human: {reason}", (10, 56),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
     out = out or os.path.splitext(image)[0] + "_annotated.png"
     cv2.imwrite(out, vis)
-    print(f"{banner}  ->  {out}")
-    return {"out": out, "n_blockages": n, "vis": vis}
+    tail = f"  [DEFER: {reason}]" if (defer and deferred) else ""
+    print(f"{banner}{tail}  ->  {out}")
+    return {"out": out, "n_blockages": n, "vis": vis, "deferred": deferred, "reason": reason}
 
 
 if __name__ == "__main__":
@@ -61,5 +73,10 @@ if __name__ == "__main__":
     ap.add_argument("--seg", help="optional coronary vessel-seg student .pt")
     ap.add_argument("--out")
     ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--temperature", type=float, default=1.0,
+                    help="triage calibration T (1.0 = no-op; >1 cools over-confidence)")
+    ap.add_argument("--defer", action="store_true",
+                    help="draw a DEFER-to-human banner when triage abstains")
     a = ap.parse_args()
-    predict(a.image, a.detector, seg=a.seg, out=a.out, conf=a.conf)
+    predict(a.image, a.detector, seg=a.seg, out=a.out, conf=a.conf,
+            temperature=a.temperature, defer=a.defer)
