@@ -1,4 +1,4 @@
-# Accuracy Research — 3-Stage XCA Pipeline (cited)
+****# Accuracy Research — 3-Stage XCA Pipeline (cited)
 
 **Question:** highest-ROI, current (2023–2025) techniques to raise accuracy across coronary segmentation (S1), stenosis detection (S2), catheter/guidewire tracking (S3), under tight data + edge (CoreML) constraints.
 **Method:** deep-research harness — 109 sub-agents, fan-out web search → source fetch → 3-vote adversarial verification (a claim needs 2/3 refutes to be killed). 21 raw claims → 8 semantically-deduped verified findings below.
