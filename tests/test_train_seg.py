@@ -135,7 +135,17 @@ def test_qualifies_false_below_target():
 
 def test_import_train_seg_without_torch():
     # Guardrail: importing the driver must not drag in torch/nnU-Net/coremltools.
-    import importlib, sys
-    assert "torch" not in sys.modules
-    importlib.import_module("src.train.train_seg")
-    assert "torch" not in sys.modules
+    # Run in a FRESH interpreter (subprocess) so torch already loaded into sys.modules by an
+    # EARLIER test file (e.g. test_clgeodice imports torch at module level) can't defeat the check
+    # via test-order pollution — the property under test is train_seg's OWN import, not global state.
+    import os, subprocess, sys, textwrap
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = textwrap.dedent("""
+        import sys, importlib
+        importlib.import_module("src.train.train_seg")
+        for mod in ("torch", "coremltools"):
+            assert mod not in sys.modules, f"train_seg import pulled in {mod}"
+    """)
+    r = subprocess.run([sys.executable, "-c", code], cwd=repo_root,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
