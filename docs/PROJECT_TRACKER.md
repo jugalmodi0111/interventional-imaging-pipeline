@@ -1,7 +1,7 @@
 # Project Tracker — Interventional Imaging Pipeline
 
 **Purpose:** single source of truth for *what is done* and *what is next*. Check boxes as you go.
-**Last updated:** 2026-07-12 · **Owner:** tech@manufex.io
+**Last updated:** 2026-07-16 · **Owner:** tech@manufex.io
 **Companion docs:** [`Model_Pipeline_Playbook.md`](Model_Pipeline_Playbook.md) (rationale) · [`DATASETS.md`](DATASETS.md) · [`COLAB_MAC_SPLIT.md`](COLAB_MAC_SPLIT.md) · repo [`README.md`](../README.md)
 
 ---
@@ -15,13 +15,13 @@
 
 ---
 
-## 1. Status snapshot (2026-07-12)
+## 1. Status snapshot (2026-07-16)
 
 | Stage | Title | State | Trained artifact | Gate status |
 |---|---|---|---|---|
 | 0 | Setup + data prep | `~` partial | — | CLAHE walk **done**; edge-bench torch path still TODO |
-| 1 | Coronary segmentation | `~` trained; gate unverified | `student.pt`+onnx+int8 (2026-07-12) | driver ran, artifacts in `outputs/coronary_student/`; **Dice/clDice NOT recorded — verify gate** |
-| 2 | Stenosis detection | `!` below floor | honest `best.pt` (F1 0.214) | patient-grouped re-run done 2026-07-13 → **F1 0.214 < 0.57 floor**; leakage confirmed, patient diversity is the bottleneck |
+| 1 | Coronary segmentation | `x` gate verified & passed | `student.pt`+onnx+int8 (CLGeoDice, 2026-07-16) — `outputs/coronary_student_clgeodice/` | **Dice 0.915 / clDice 0.956 via the CLGeoDice run (2026-07-16) → CLEARS the Dice ≥ 0.75 floor.** Prior `outputs/coronary_student/` run (2026-07-12) was gate UNVERIFIED (Dice/clDice unlogged); this run is verified |
+| 2 | Stenosis detection | `!` below floor | honest `best.pt` (F1 0.291) | +CADICA re-run done 2026-07-16 (`arcade+cadica+danilov_yolo11s_768_e150`) → **F1 0.291 / recall 0.271 < 0.57 floor** (up from F1 0.214); CADICA (+3996 keyframes) confirmed patient-diversity is the lever |
 | 2.5 | Calibration + abstention | `~` partial | — | ECE coded; reliability/temp-scale/OOD are TODO |
 | 3 | Temporal + catheter tracking | `x` **done** | `best-catheter.pt` + 4 provenance zips | detection+track complete |
 | 3b | Cross-vendor validation | `!` blocked | — | eval harness is a TODO shell |
@@ -29,7 +29,7 @@
 | 5 | Regulatory / intended-use gate | `[ ]` not started | — | name before any non-research use |
 | GD | **Grounding DINO labeler** (new) | `~` scaffolded | — | modules + pure helpers done (2026-07-11); SSL-seed wiring pending |
 
-**One-line summary:** Stage 3 (catheter) trained end-to-end. Stage 1 (coronary) driver **ran** — `student.pt`+onnx+int8 exist in `outputs/coronary_student/` (2026-07-12), but **Dice/clDice were not logged; the accuracy-floor gate is unverified**. Stage 2 (stenosis): honest patient-grouped re-run **done 2026-07-13 → F1 0.214, BELOW floor 0.57** (leakage confirmed; only 64 Danilov patients → data diversity is the bottleneck). Grounding DINO labeler is scaffolded (modules import torch-free, pure helpers unit-tested). Local test suite: **150 passing** (+3 skipped) (`pytest tests/`).
+**One-line summary:** Stage 3 (catheter) trained end-to-end. Stage 1 (coronary): CLGeoDice distillation run **done 2026-07-16 → Dice 0.915 / clDice 0.956, CLEARS the Dice ≥ 0.75 floor** — the first coronary run with metrics on record (artifacts in `outputs/coronary_student_clgeodice/`; the prior `outputs/coronary_student/` run had its gate unverified). Stage 2 (stenosis): +CADICA honest patient-grouped re-run **done 2026-07-16 → F1 0.291 / recall 0.271, still BELOW floor 0.57** (up from F1 0.214; CADICA added 3996 keyframes and confirmed patient diversity is the lever). Grounding DINO labeler is scaffolded (modules import torch-free, pure helpers unit-tested). Local test suite: **150 passing** (+3 skipped) (`pytest tests/`).
 
 ---
 
@@ -90,6 +90,7 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
   - [x] CoreML export via `src.export.to_coreml` (guarded: `export.coreml` and macOS)
   - [ ] **Refinement:** `qualifies()` gates on Dice only — extend to require clDice within ~3% of teacher (playbook exit gate)
 - [x] **Coronary driver ran** — `outputs/coronary_student/{student.pt,student.onnx,student.int8.onnx}` produced (2026-07-12). **BUT Dice/clDice were not logged → accuracy-floor gate UNVERIFIED (re-eval to record numbers).**
+- [x] **Accuracy-floor gate VERIFIED & PASSED** (2026-07-16) — CLGeoDice distillation run (`clgeodice_weight 0.5`, 200/200 epochs) → **Dice 0.915 (best mid-run 0.927) ≥ 0.75 ✅, clDice 0.956 (best mid-run 0.980)**. First coronary run with metrics on record; artifacts in `outputs/coronary_student_clgeodice/{student.pt,student.onnx,student.int8.onnx}` (gitignored). Supersedes the 2026-07-12 UNVERIFIED run above.
 - [ ] SSL pretraining on XCAD 1,621 unlabeled + institutional cine
 - [ ] CoreML export + `make validate-coreml` + `make bench-coreml` on Mac
 - **Accuracy floor gate:** Dice ≥ 0.75 **AND** clDice within ~3% of teacher, **re-checked after INT8** (INT8 breaks thin vessels).
@@ -106,6 +107,7 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 - [x] **Leakage fix**: `io_utils.split_of` now patient-grouped (`group_key`) so Danilov frames of a patient share a split; ARCADE unchanged; 47 tests pass
 - [x] **Leakage hard-gate in the notebook** (2026-07-12 c): `io_utils.audit_split_leakage()` + a new §3b cell in `kaggle_stenosis_plug_and_play.ipynb` **raise before training** if (a) any patient/clip group is in both train+val, or (b) Danilov frames were not actually collapsed by `group_key` (real filenames ≠ `<site>_<patient>_<seq>_<frame>` → silent per-frame leak). Danilov stem set is read from raw *independently of the regex* so a silent no-op can't pass. SSL pseudo-label auto-disabled unless a disjoint `ssl.unlabeled_dir` exists (else it re-leaks val frames into train). 55 tests pass.
 - [x] **Re-run with patient-grouped split DONE** (2026-07-13, Kaggle `jugalmodi0111/stenosis`): honest split (train 8766/1349 groups, val 1059/215 groups; leakage check passed) → **F1 0.214, mAP50 0.108 — BELOW floor 0.57.** The 0.885 was ~all frame-leakage; Danilov's 8325 frames = only 64 patients, so patient diversity (not epochs/model) is the bottleneck. Archived: [`experiments/stenosis_arcade+danilov_yolo11s_768_grouped/`](../experiments/stenosis_arcade+danilov_yolo11s_768_grouped/RESULTS.md)
+- [x] **+CADICA re-run DONE** (2026-07-16, Kaggle `jugalmodipesurr/stenosis`, `arcade+cadica+danilov_yolo11s_768_e150`): added **CADICA (3996 keyframes)** on the honest patient-grouped split (leakage audit passed) → **F1 0.291 / recall 0.271 / mAP50 0.209 — still BELOW floor 0.57**, but a real lift from F1 0.214 (**+0.077 F1, +0.105 recall ~+63% relative, +0.101 mAP50**). CADICA is the **biggest honest single-lever gain to date** and confirms patient diversity is the lever; next levers are **more patients + pseudo-label SSL**. Archived: [`experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/`](../experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/RESULTS.md)
 - [ ] Run naming: `run_tag(cfg)` auto-names each run folder (no clobber); Kaggle notebook wired
 - [ ] Pseudo-label SSL round on unlabeled frames (raise recall)
 - [ ] Track COCO AP/AR on Danilov
@@ -202,8 +204,8 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 
 *Done 2026-07-11 (code-side, local, TDD): `preprocess.process_dir`; `train_seg.py` driver; `autolabel_gdino.py` + `grounded_sam.py`; GD Slot-2 SSL-seed wiring + detector speed knobs + notebook speedup. 45 tests passing. Remaining queue is GPU-run + wiring:*
 
-1. **[Stage 1 — coronary]** Driver already produced `student.pt`+onnx+int8 (2026-07-12) but **no Dice/clDice were logged** — re-eval (or re-run) to record the numbers and confirm the Dice ≥ 0.75 + clDice floor, **re-checked after INT8**.
-2. **[Stage 2 — stenosis]** ~~Run kaggle_stenosis_plug_and_play~~ **DONE 2026-07-13 → F1 0.214 < 0.57 floor.** Next lever is **patient diversity** (64 Danilov patients too few) + pseudo-label SSL / GD cold-start — not epochs/model. See archive RESULTS.md.
+1. **[Stage 1 — coronary]** ~~Re-eval to record Dice/clDice~~ **DONE 2026-07-16 → Dice 0.915 / clDice 0.956, CLEARS the ≥ 0.75 floor** (CLGeoDice run, `outputs/coronary_student_clgeodice/`). Remaining: **clDice vs teacher within ~3%** (compute teacher clDice) + **post-INT8 clDice re-check** (`coreml_validate.py` on the palettized/CoreML student) — the INT8-on-thin-vessels gate is still open.
+2. **[Stage 2 — stenosis]** ~~Run kaggle_stenosis_plug_and_play~~ ~~DONE 2026-07-13 → F1 0.214~~ **+CADICA DONE 2026-07-16 → F1 0.291 / recall 0.271, still < 0.57 floor** (up from 0.214; CADICA confirmed patients > frames). Next lever: **more patient diversity** + pseudo-label SSL / GD cold-start — not epochs/model. See archive RESULTS.md.
 3. **[Stage 1 refinement]** Extend `qualifies()` to require clDice within ~3% of teacher (not Dice-only).
 4. **[Stage 3 close-out]** Record catheter IoU/fps/ID-switch on device; export catheter → CoreML.
 5. **[Stage 2.5]** Finish `calibration.py` (reliability + temp-scaling + OOD) once ≥1 seg/det model exists to score.
@@ -212,6 +214,10 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 ---
 
 ## 8. Changelog
+
+- **2026-07-16** — **Two runs pulled + archived (CADICA stenosis + CLGeoDice coronary).**
+  - **Stage 1 coronary — gate now VERIFIED & PASSED.** Kaggle `jugalmodipoiro/coronary`, CLGeoDice distillation (`clgeodice_weight 0.5`, 200/200 epochs) → **Dice 0.915 (best 0.927) ≥ 0.75, clDice 0.956 (best 0.980)** — first coronary run with metrics on record (the 2026-07-12 run's gate was unverified). Artifacts `outputs/coronary_student_clgeodice/{student.pt,student.onnx,student.int8.onnx}` + RESULTS.md (weights gitignored). Retrieved via direct Kaggle output-file URLs (kernel saved ~18.5k files incl. ~15k regenerable nnUNet cache PNGs — a full `kernels output` pull was infeasible; **fix for future coronary runs: put nnU-Net caches in `/kaggle/tmp`**). Still open: teacher-clDice comparison + post-INT8 clDice re-check.
+  - **Stage 2 stenosis — +CADICA, biggest honest single-lever gain.** Kaggle `jugalmodipesurr/stenosis`, `arcade+cadica+danilov_yolo11s_768_e150` (patient-grouped, leakage audit PASSED; CADICA +3996 keyframes) → **F1 0.291 / recall 0.271 / mAP50 0.209 — still BELOW floor 0.57**, up from F1 0.214 (**+0.077 F1, +0.105 recall ~+63% rel, +0.101 mAP50**). Confirms patient diversity is the lever. Archived [`experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/`](../experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/RESULTS.md) (RESULTS.md + curves + demo; best.pt gitignored).
 - **2026-07-13** — **Honest stenosis re-run pulled + archived.** Kaggle `jugalmodi0111/stenosis` (ARCADE+Danilov, yolo11s/768, **patient-grouped split — leakage check PASSED**: train 8766/1349 groups, val 1059/215 groups, danilov 8325 frames→64 patients) → **F1 0.214 / mAP50 0.108, BELOW floor 0.57** (best.pt F1 0.2136). Confirms the 0.885 was ~all frame-leakage; Danilov is 8325 frames but only **64 patients**, so patient diversity (not epochs/model) is the bottleneck. Archived [`experiments/stenosis_arcade+danilov_yolo11s_768_grouped/`](../experiments/stenosis_arcade+danilov_yolo11s_768_grouped/RESULTS.md) (RESULTS.md + curves; best.pt gitignored). Full suite **150 passed / 3 skipped**.
 - **2026-07-12 (e)** — **Stage 2.5 calibration finished** (`src/eval/calibration.py`, pure numpy / torch-free). Added `reliability_curve` + `save_reliability_diagram` (matplotlib-guarded), `temperature_scale` (1-D golden-section on BCE) + `apply_temperature`, `auroc` (tie-averaged Mann–Whitney), `ood_auroc` + `uncertainty_score` (`1-|2p-1|`). Math verified: over-confident logits ECE **0.094 → 0.020** (< 0.05 gate), OOD-AUROC 0.907. Tests +7 (`tests/test_calibration_extra.py`); suite **150 passing** + 3 skimage-skipped. Stage 2.5 code-complete; remaining = score a real model once weights land + wire `CoronaryDominance` tags.
 - **2026-07-12 (d)** — **Training-hazard fixes landed** (6 parallel implementation agents, disjoint files, TDD; suite 58→**144 passing** + 3 skimage-skipped). Closes the hazards the (c) audit found:
