@@ -9,6 +9,7 @@ import os
 
 import pytest
 
+from src.data_prep.cadica_to_yolo import _cap_records
 from src.data_prep.io_utils import (audit_split_leakage, duplicate_basenames_across_cocos,
                                      group_key, split_of)
 
@@ -45,6 +46,39 @@ def test_arcade_numeric_names_unchanged():
     # ARCADE frames are plain integers -> each its own group (no sequence to leak)
     assert group_key("800") == "800"
     assert group_key("1000") == "1000"
+
+
+# --- CADICA grouping (P1.3): pXX_vYY_NNNNN frames must collapse to patient pXX --------------------
+
+def test_cadica_frame_groups_to_its_patient():
+    assert group_key("p12_v3_00045") == "p12"
+    assert group_key("p1_v1_0") == "p1"
+
+
+def test_cadica_frames_of_a_patient_share_a_group():
+    frames = [f"p12_v3_{i:05d}" for i in range(20)] + [f"p12_v7_{i:05d}" for i in range(20)]
+    keys = {group_key(f) for f in frames}
+    assert keys == {"p12"}, f"all frames of patient p12 must share one group, got {keys}"
+
+
+def test_two_cadica_patients_get_distinct_groups():
+    assert group_key("p12_v3_00045") != group_key("p13_v3_00045")
+
+
+def test_split_of_agrees_for_cadica_patient_and_frame():
+    # split_of hashes group_key(name), so a bare patient id and any of its frames must land on the
+    # SAME side of the split -- this is what cadica_to_yolo._convert relies on when it calls
+    # io.split_of(patient) directly instead of io.split_of(<full frame stem>).
+    assert split_of("p12") == split_of("p12_v3_00045")
+
+
+# --- regression: pre-existing group_key patterns must be unaffected by the CADICA branch ---------
+
+def test_group_key_existing_patterns_unchanged():
+    assert group_key("14_002_5_0016") == "14_002"                       # Danilov
+    assert group_key("JFQ_j3383201_img-00000-0042") == "JFQ_j3383201"   # CathAction
+    assert group_key("train_5") == "train_5"                            # ARCADE-disambiguated stem
+    assert group_key("5") == "5"                                        # ARCADE bare stem
 
 
 def test_no_cathaction_clip_spans_both_splits():
@@ -101,6 +135,38 @@ def test_audit_raises_when_danilov_names_defeat_group_key(tmp_path):
     tmp = _write_split(str(tmp_path), train_stems=bad[:14], val_stems=bad[14:])
     with pytest.raises(AssertionError, match="UNGROUPED DANILOV"):
         audit_split_leakage(tmp, danilov_stems=bad)
+
+
+# --- _cap_records (P1.3): CADICA per-patient frame cap, pure selection logic ----------------------
+
+def _cadica_rec(patient, video, i):
+    stem = f"{patient}_{video}_{i:05d}"
+    return (patient, video, f"/data/{patient}/{video}/input/{stem}.png",
+            f"/data/{patient}/{video}/groundtruth/{stem}.txt")
+
+
+def test_cap_records_limits_frames_per_patient():
+    # p1 has 12 frames across 2 videos; p2 has only 3. Capping at k=5 must trim p1 to <=5 while
+    # leaving the smaller patient p2 untouched (it never exceeded the cap).
+    records = ([_cadica_rec("p1", "v1", i) for i in range(6)]
+               + [_cadica_rec("p1", "v2", i) for i in range(6)]
+               + [_cadica_rec("p2", "v1", i) for i in range(3)])
+
+    kept = _cap_records(records, 5)
+
+    by_patient = {}
+    for patient, video, ip, gp in kept:
+        by_patient.setdefault(patient, []).append((video, ip, gp))
+
+    assert len(by_patient["p1"]) <= 5, "patient p1 must be capped to at most k=5 frames"
+    assert len(by_patient["p2"]) == 3, "patient p2 has <=k frames and must keep them all"
+    assert set(kept) <= set(records), "cap must only SELECT from the given records, never fabricate"
+
+
+def test_cap_records_k_none_keeps_everything():
+    records = [_cadica_rec("p1", "v1", i) for i in range(4)]
+    kept = _cap_records(records, None)
+    assert set(kept) == set(records)
 
 
 # --- duplicate_basenames_across_cocos: ARCADE cross-split stem collision -------------

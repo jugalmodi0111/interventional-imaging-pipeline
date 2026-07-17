@@ -60,3 +60,35 @@ def test_train_kwargs_config_overrides():
     k = train_kwargs(cfg)
     assert k["imgsz"] == 512 and k["epochs"] == 50 and k["batch"] == 8
     assert k["lr0"] == 5e-4 and k["cache"] is False and k["workers"] == 2 and k["patience"] == 10
+
+
+def test_train_kwargs_no_augment_block_unchanged():
+    # No 'augment' key -> base defaults only, no extra keys leak in.
+    k = train_kwargs({})
+    assert set(k.keys()) == {"imgsz", "epochs", "batch", "lr0", "cache", "workers", "patience", "amp"}
+    assert k["imgsz"] == 640 and k["epochs"] == 100 and k["batch"] == 16
+    assert k["lr0"] == 1e-3 and k["cache"] is True and k["workers"] == 8
+    assert k["patience"] == 30 and k["amp"] is True
+
+
+def test_train_kwargs_augment_block_passes_through():
+    cfg = {"augment": {"mosaic": 0.0, "scale": 0.2, "erasing": 0.0, "box": 9.0, "cos_lr": True}}
+    k = train_kwargs(cfg)
+    assert k["mosaic"] == 0.0
+    assert k["scale"] == 0.2
+    assert k["erasing"] == 0.0
+    assert k["box"] == 9.0
+    assert k["cos_lr"] is True
+
+
+def test_train_kwargs_augment_none_value_skipped():
+    # A None-valued augment key leaves the base dict alone so ultralytics' own default stands.
+    k = train_kwargs({"augment": {"mosaic": None}})
+    assert "mosaic" not in k
+
+
+def test_train_kwargs_augment_overrides_base_key():
+    # augment can collide with a base key (e.g. imgsz) -- override wins.
+    cfg = {"model": {"imgsz": 512}, "augment": {"imgsz": 1024}}
+    k = train_kwargs(cfg)
+    assert k["imgsz"] == 1024

@@ -15,8 +15,13 @@ land on one side of the train/val split (no frame leakage), mirroring the Danilo
 keyframes carry a groundtruth .txt, so a frame is converted iff it has one (annotation-driven).
 
 Heavy deps (cv2) are imported lazily inside the conversion functions, so the pure helpers below
-(`cadica_boxes_to_yolo_lines`, `parse_cadica_gt`, `cadica_patient_of`) can be imported and
-unit-tested without cv2 installed. Writes to the SHARED stenosis OUT dir like Danilov.
+(`cadica_boxes_to_yolo_lines`, `parse_cadica_gt`, `cadica_patient_of`, `_cap_records`) can be
+imported and unit-tested without cv2 installed. Writes to the SHARED stenosis OUT dir like Danilov.
+
+Optional per-patient frame cap (config `datasets.cadica.max_frames_per_patient`, default None = no
+cap): CADICA ships ~100 near-duplicate keyframes/patient, which dilutes the split with redundant
+frames; capping keeps an evenly-spaced subset per patient (see `_cap_records` / `io_utils.
+cap_frames_per_patient`).
 """
 import argparse, glob, os, re, yaml
 
@@ -94,6 +99,29 @@ def _out_stem(patient, video, frame_stem):
     return "_".join([p for p in (patient, video) if p] + [frame_stem])
 
 
+def _cap_records(records, k):
+    """Select which ``(patient, video, img_path, gt_path)`` records survive a per-patient frame cap.
+
+    ``records`` is the materialized ``_iter_frames`` output. Builds each record's OUTPUT stem (via
+    ``_out_stem``, same as the real conversion path) and delegates the actual selection to
+    ``io_utils.cap_frames_per_patient`` keyed by ``group_key`` on that stem, so capping groups by the
+    SAME patient key the split/leakage accounting uses (evenly-spaced picks per patient, not first-k).
+    ``k=None`` keeps every record (sorted by out-stem, for determinism).
+
+    ``io_utils`` (and the cv2/numpy it imports at module load) is only imported inside this function,
+    not at module top, so importing ``cadica_to_yolo`` itself still doesn't require cv2 -- only
+    calling this (or ``_convert``) does.
+    """
+    from src.data_prep.io_utils import cap_frames_per_patient, group_key
+    by_stem = {}
+    for rec in records:
+        patient, video, ip, gp = rec
+        frame_stem = os.path.splitext(os.path.basename(ip))[0]
+        by_stem[_out_stem(patient, video, frame_stem)] = rec
+    kept_stems = cap_frames_per_patient(by_stem.keys(), k, key_fn=group_key)
+    return [by_stem[s] for s in kept_stems]
+
+
 # --------------------------------------------------------------------------------------------------
 # Conversion (needs cv2 / io_utils)
 # --------------------------------------------------------------------------------------------------
@@ -122,12 +150,19 @@ def _iter_frames(root):
             yield patient, video, ip, gp
 
 
-def _convert(root, out_dir, size):
-    """CLAHE+resize each CADICA frame, write YOLO images/labels/{train,val} split by PATIENT."""
+def _convert(root, out_dir, size, max_per_patient=None):
+    """CLAHE+resize each CADICA frame, write YOLO images/labels/{train,val} split by PATIENT.
+
+    If ``max_per_patient`` is set, the record list is capped per patient (``_cap_records``, evenly
+    spaced across each patient's frames) BEFORE any image is read/written, so the near-duplicate
+    keyframes that get dropped never touch disk."""
     import cv2
     from src.data_prep import io_utils as io
+    records = list(_iter_frames(root))
+    if max_per_patient is not None:
+        records = _cap_records(records, max_per_patient)
     n = 0
-    for patient, video, ip, gp in _iter_frames(root):
+    for patient, video, ip, gp in records:
         g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
         if g is None:
             continue
@@ -153,7 +188,8 @@ def main(cfg):
         return 0
     root = d["root"]
     size = cfg.get("model", {}).get("imgsz", 640)
-    n = _convert(root, OUT, size)
+    max_per_patient = cfg.get("datasets", {}).get("cadica", {}).get("max_frames_per_patient")
+    n = _convert(root, OUT, size, max_per_patient=max_per_patient)
     if n == 0:
         print(f"[cadica] WARNING: no CADICA frames converted under {root!r}; check layout.")
         return 0

@@ -78,13 +78,19 @@ def run_tag(cfg):
 def train_kwargs(cfg):
     """Ultralytics train() kwargs incl. speed knobs. Fast, quality-neutral defaults:
     cache (RAM/disk dataset cache), amp (mixed precision), and patience (early-stop once the
-    val metric plateaus — keeps the same best.pt, skips wasted epochs)."""
+    val metric plateaus). An optional top-level cfg['augment'] block overrides any ultralytics
+    train() kwarg (mosaic/scale/erasing/hsv_*/close_mosaic/cos_lr/box/dfl/...) so augmentation
+    can be tuned for the domain (small faint grayscale lesions) without touching this function;
+    None-valued keys are skipped so a config can leave a knob at the ultralytics default."""
     m, tr = _detector(cfg) or {}, cfg.get("train", {})
-    return {"imgsz": m.get("imgsz", 640),
-            "epochs": tr.get("epochs", 100), "batch": tr.get("batch", 16),
-            "lr0": tr.get("lr", 1e-3),
-            "cache": tr.get("cache", True), "workers": tr.get("workers", 8),
-            "patience": tr.get("patience", 30), "amp": tr.get("amp", True)}
+    kw = {"imgsz": m.get("imgsz", 640),
+          "epochs": tr.get("epochs", 100), "batch": tr.get("batch", 16),
+          "lr0": tr.get("lr", 1e-3),
+          "cache": tr.get("cache", True), "workers": tr.get("workers", 8),
+          "patience": tr.get("patience", 30), "amp": tr.get("amp", True)}
+    aug = cfg.get("augment") or {}
+    kw.update({k: v for k, v in aug.items() if v is not None})
+    return kw
 
 
 def best_f1_from_pr(precision_arr, recall_arr):

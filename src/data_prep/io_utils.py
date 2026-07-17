@@ -13,14 +13,19 @@ from src.data_prep.preprocess import clahe_unsharp
 # the same sequence into train AND val. Collapse every frame of one source sequence to a single
 # group so it lands entirely on one side (honest holdout):
 #   Danilov    <site>_<patient>_<seq>_<frame>  (e.g. 14_002_5_0016)          -> <site>_<patient>
+#   CADICA     p<patient>_v<video>_<frame>     (e.g. p12_v3_00045)           -> p<patient>
 #   CathAction <clip>_img-<seg>-<frame>        (e.g. JFQ_j3383201_img-00000-0042) -> <clip>
 _PATIENT_RE = re.compile(r"^(\d+_\d+)_\d+_\d+$")
+_CADICA_RE = re.compile(r"^(p\d+)_v\d+_\d+")   # CADICA pXX_vYY_NNNNN -> patient pXX
 _CLIP_RE = re.compile(r"^(.+?)_img-\d+-\d+$")
 
 
 def group_key(name):
     """Split-group key: collapse a source sequence's frames to one key; else the name itself."""
     m = _PATIENT_RE.match(name)
+    if m:
+        return m.group(1)
+    m = _CADICA_RE.match(name)
     if m:
         return m.group(1)
     m = _CLIP_RE.match(name)

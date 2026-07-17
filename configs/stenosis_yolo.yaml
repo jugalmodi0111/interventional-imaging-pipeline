@@ -2,17 +2,36 @@ task: stenosis_detection
 datasets:
   arcade_stenosis: {root: data/raw/arcade/stenosis, task: 2, format: coco}   # stenosis split only
   danilov:         {root: data/raw/danilov, format: coco, max_frames_per_patient: 5}   # cap 5/patient: 64 patients/8325 frames dilute the honest metric (arcade-only 0.246 > +danilov 0.214)
-  cadica:          {root: data/raw/cadica, format: native}     # 2024 patient-diverse lesion angiography; run cadica_to_yolo prep to include (patients > frames)
+  cadica:          {root: data/raw/cadica, format: native, max_frames_per_patient: 40}   # 2024 patient-diverse lesion angiography; run cadica_to_yolo prep to include (patients > frames). cap 40/patient: 3996 keyframes over ~42 patients are near-duplicates -> cap cuts redundancy + val-fraction variance
 model: {name: yolo11s, imgsz: 768, pretrained: true}          # 's' + 768: cross the F1 floor (nano/640 sat at 0.25). Still edge-deployable.
 # model.pretrained_weights: runs/ssl/xca_backbone.pt          # SSL/angiography-pretrained backbone drop-in (produce GPU-side; loaded strict=False before train)
 # if T4 OOMs at 768/batch16: drop train.batch to 8 (or set -1 for auto).
 ssl:   {pseudo_label: true, conf: 0.4}                        # semi-supervised boost
 # ssl.seed: gdino  -> open-vocab Grounding DINO cold-start on unlabeled frames before self-training
 #                    (needs transformers + a GPU; set ssl.unlabeled_dir to point at the frames)
-train: {epochs: 150, batch: 16, lr: 1.0e-3,
-        cache: true, workers: 8, patience: 30, amp: true}     # speed: RAM cache + AMP + early-stop (quality-neutral)
+train: {epochs: 80, batch: 16, lr: 1.0e-3,
+        cache: true, workers: 8, patience: 30, amp: true}     # epochs 150->80: val saturated ~ep16, best ~ep39 (see experiments/..._e150). RAM cache + AMP + early-stop.
+# Domain-tuned augmentation (Phase 1, docs/STAGE2_PHASE1_POA.md P1.2). YOLO COCO defaults are wrong
+# for tiny (23-115px) faint grayscale lesions: mosaic never closed, scale/erasing shrink/erase them,
+# HSV is a grayscale no-op. Flows through train_detector.train_kwargs -> ultralytics model.train().
+augment:
+  mosaic: 0.0            # A/B this vs 0.3: 0.0 is safest for tiny objects (mosaic downscales/composites)
+  close_mosaic: 15       # if mosaic>0, guarantees a mosaic-off tail actually fires before the run ends
+  scale: 0.2             # was 0.5 — ±50% scale jitter loses the smallest lesions
+  erasing: 0.0           # was 0.4 — random-erase can delete the lesion itself
+  hsv_h: 0.0
+  hsv_s: 0.0
+  hsv_v: 0.0             # grayscale angiography: HSV jitter is wasted compute
+  fliplr: 0.5            # keep
+  translate: 0.1         # keep
+  degrees: 0.0
+  cos_lr: true           # smoother decay for the shortened 80-epoch schedule
+  box: 9.0               # was 7.5 — push localization (mAP50-95 was 0.080 vs mAP50 0.209)
+  dfl: 2.0               # was 1.5
 metrics: [coco_ap, f1]
 val:    {conf: 0.001}                                         # low eval conf so recall (the costly axis) isn't throttled; add val.iou to override NMS IoU
-target: {f1: 0.57}                                            # F1 floor. NOTE: ARCADE stenosis SOTA ~0.5 -> 0.57 may exceed published; confirm with clinical stakeholders.
-# target: {f1: 0.57, recall: 0.60}                            # recall-first gate: a missed stenosis is the deadly error. Uncomment + set the clinical recall floor to enable.
+# Recall-first gate (Phase 1): a missed stenosis is the deadly error. qualifies_det requires BOTH
+# F1>=f1 AND recall>=recall. Surfaces recall in the gate line; expect FAIL until the levers land.
+target: {f1: 0.57, recall: 0.60}                             # F1 floor. NOTE: ARCADE stenosis SOTA ~0.5 -> 0.57 may exceed published; confirm with clinical stakeholders.
+# target: {f1: 0.57}                                          # prior F1-only gate (recall unweighted)
 export: {onnx: true, int8: true, tensorrt: false}
