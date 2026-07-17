@@ -36,6 +36,11 @@ augment:
   cos_lr: true           # smoother decay for the shortened 80-epoch schedule
   box: 9.0               # was 7.5 — push localization (mAP50-95 was 0.080 vs mAP50 0.209)
   dfl: 2.0               # was 1.5
+# P2.1 box-size harmonization: clamp tiny boxes up to a min w/h floor (fixes the source convention
+# mismatch the §3c annotation QA shows — danilov boxes ~4x smaller than arcade, tiny_frac 0.36).
+# min_box_wh 0 = OFF (default; keeps the baseline). Set ~0.04 (~30px at 768) to enable. TRAIN-ONLY by
+# default so val stays comparable to the un-harmonized baseline.
+harmonize: {min_box_wh: 0.0, splits: [train]}
 metrics: [coco_ap, f1]
 val:    {conf: 0.001}                                         # low eval conf so recall (the costly axis) isn't throttled; add val.iou to override NMS IoU
 # Recall-first gate (Phase 1): a missed stenosis is the deadly error. qualifies_det requires BOTH

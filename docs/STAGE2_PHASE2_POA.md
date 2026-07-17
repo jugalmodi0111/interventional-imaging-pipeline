@@ -20,19 +20,27 @@ Phase 2 attacks the accuracy ceiling itself (raise the PR curve), not just the o
 
 **Why.** mAP50 0.209 vs mAP50-95 0.080 = loose localization = the three sources box stenosis differently (tightness, size, what counts). This caps IoU-sensitive metrics and injects label noise.
 
-**Tooling (landed).** `src/eval/annotation_qa.py` — per-source box-geometry stats from the YOLO labels (width/height/area percentiles, `tiny_frac`, boxes/img). Notebook **§3c** runs it pre-train.
+**Measured (dry-run §3c annotation QA, 2026-07-18 — label geometry, model-independent so valid despite 3 epochs):**
 
-**Run.**
-```
-python -m src.eval.annotation_qa --proc data/processed/stenosis --split train
-# -> per-source table + /kaggle/working/phase2_annotation_qa.txt
-```
+| source | median box area | tiny_frac (<38px) | boxes/img |
+|---|---|---|---|
+| arcade | 0.0108 | 0.056 | 1.61 |
+| cadica | 0.0058 | 0.125 | 1.40 |
+| **danilov** | **0.0029** | **0.36** | 1.00 |
 
-**Read → act.** Compare `area_p50` / `w_p50` / `tiny_frac` across ARCADE / CADICA / Danilov:
-- one source systematically **larger/looser** boxes → its convention differs → standardize tightness or **drop that slice** and re-measure.
-- one source ≫ `tiny_frac` → its lesions are sub-detectable at 768 → candidate for the 1024 run (P2.3) or exclusion.
+ARCADE boxes are ~**4× Danilov's area**; a third of Danilov boxes are sub-38px. Mismatch confirmed → Danilov is the outlier. (Prior ablation agrees: arcade-only 0.246 F1 **>** +danilov 0.214 — Danilov dilutes the honest metric even capped.)
 
-**Effort** med · **Uplift** med–high (directly on the localization collapse) · **Retrain** yes (after harmonizing).
+**Tooling (landed 2026-07-18, TDD, 9 tests).**
+- `src/eval/annotation_qa.py` — the per-source QA above (notebook §3c).
+- `src/data_prep/harmonize.py` — **clamps every box up to a min w/h floor** (recall-preserving; no positive dropped), config `harmonize.min_box_wh` (default 0 = off), notebook **§3f** (`HARMONIZE` flag → 0.04 ≈ 30px, TRAIN-ONLY so val stays comparable to baseline).
+- **Drop-Danilov** lever — `DROP_DANILOV=True` in notebook §3 convert cell (zero code, strongest-evidenced single experiment).
+
+**Run (when GPU frees).** Two cheap A/Bs vs the un-harmonized baseline:
+1. `DROP_DANILOV=True` → the model trains on ARCADE+CADICA only (both consistent conventions).
+2. `HARMONIZE=True` (keep Danilov) → clamp tiny boxes to a common floor.
+Compare each per-source (§5b P1.0) + mAP50-95 vs baseline 0.080.
+
+**Effort** low (both are toggles) · **Uplift** med–high (directly on the localization collapse) · **Retrain** yes.
 
 ---
 
