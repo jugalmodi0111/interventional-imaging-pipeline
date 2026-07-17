@@ -4,11 +4,19 @@ datasets:
   danilov:         {root: data/raw/danilov, format: coco, max_frames_per_patient: 5}   # cap 5/patient: 64 patients/8325 frames dilute the honest metric (arcade-only 0.246 > +danilov 0.214)
   cadica:          {root: data/raw/cadica, format: native, max_frames_per_patient: 40}   # 2024 patient-diverse lesion angiography; run cadica_to_yolo prep to include (patients > frames). cap 40/patient: 3996 keyframes over ~42 patients are near-duplicates -> cap cuts redundancy + val-fraction variance
 model: {name: yolo11s, imgsz: 768, pretrained: true}          # 's' + 768: cross the F1 floor (nano/640 sat at 0.25). Still edge-deployable.
+# P2.3 model/resolution sweep (edit the line above, then `yolo_to_coreml --smoketest` the result on Mac):
+# model: {name: yolo11m, imgsz: 768, pretrained: true}        # ~2x latency/size vs 's'; still ANE-viable. Data-limited -> expect small gains.
+# model: {name: yolo11s, imgsz: 1024, pretrained: true}       # higher res helps the smallest lesions' recall; latency ~quadratic -> bench on device.
 # model.pretrained_weights: runs/ssl/xca_backbone.pt          # SSL/angiography-pretrained backbone drop-in (produce GPU-side; loaded strict=False before train)
 # if T4 OOMs at 768/batch16: drop train.batch to 8 (or set -1 for auto).
-ssl:   {pseudo_label: true, conf: 0.4}                        # semi-supervised boost
-# ssl.seed: gdino  -> open-vocab Grounding DINO cold-start on unlabeled frames before self-training
-#                    (needs transformers + a GPU; set ssl.unlabeled_dir to point at the frames)
+ssl:   {pseudo_label: true, conf: 0.4}                        # semi-supervised boost (P2.2: the confirmed data lever)
+# ssl.unlabeled_dir MUST point at a DISJOINT unlabeled set (no val patients) or SSL stays OFF — the
+# notebook auto-sets it to data/raw/xcad when an XCAD dataset is attached. XCAD (~1621 frames) is a
+# separate cohort from ARCADE/CADICA/Danilov, so it's disjoint by construction (safe to self-train on).
+# ssl.unlabeled_dir: data/raw/xcad
+# ssl.seed: gdino  -> open-vocab Grounding DINO cold-start on the unlabeled frames before self-training
+#                    (needs transformers + a GPU; runs on ssl.unlabeled_dir, a better cold start than
+#                     a YOLO trained on scarce labels)
 train: {epochs: 80, batch: 16, lr: 1.0e-3,
         cache: true, workers: 8, patience: 30, amp: true}     # epochs 150->80: val saturated ~ep16, best ~ep39 (see experiments/..._e150). RAM cache + AMP + early-stop.
 # Domain-tuned augmentation (Phase 1, docs/STAGE2_PHASE1_POA.md P1.2). YOLO COCO defaults are wrong
