@@ -1,0 +1,14 @@
+# orchestrator.yaml — the registry the orchestrator loads
+router:
+  weights: runs/router/student.pt
+  labels: [coronary_angiography, cerebral_dsa, other_xray, non_medical]
+  thresholds: {keep_thr: 0.60, margin: 0.15, quality_thr: 0.5}
+modalities:
+  coronary_angiography:
+    task: det
+    model_path: runs/stenosis/arcade+cadica+danilov_yolo11s_768_e150/base/weights/best.pt
+    display_name: Coronary angiography
+    finding_label: coronary_stenosis
+    finding_display: Possible coronary artery stenosis (blockage) — clinician review required
+    floor_ok: false        # flip to true ONLY when Phase A clears F1>=0.57 recall>=0.60
+  # cerebral_dsa / tavr_ct / avf: add here as their models clear their floors (Phase F extension)
