@@ -10,7 +10,7 @@
 
 For procedural guidance you do **not** let a fast, light model compensate for missing a stenosis or under-segmenting a vessel. Selection is therefore **two-step**:
 
-1. **Qualify** — a model must clear its problem's *clinical accuracy floor* (e.g. Dice ≥ 0.75 for coronary vessels, F1 ≥ 0.55 for stenosis). Floors live on the `Accuracy Floors` sheet and are editable assumptions to be set with clinical stakeholders.
+1. **Qualify** — a model must clear its problem's *clinical accuracy floor* (e.g. Dice ≥ 0.75 for coronary vessels, F1 ≥ 0.57 for stenosis). Floors live on the `Accuracy Floors` sheet and are editable assumptions to be set with clinical stakeholders.
 2. **Rank** — only among qualifiers do you optimize the **edge-suitability composite** (footprint, speed, edge-readiness, etc.).
 
 The composite in the matrix (column J) is an **edge-suitability index, not an overall quality score**: a teacher at 3.1 can be more accurate than a student at 4.4. Always read it together with the Role and Qualifies columns. Applying the gate already changes two recommendations: SE-RegUNet (Dice ~0.72) drops below the coronary floor, and YOLO11n (F1 ~0.54) drops below the stenosis floor — so the qualifying picks become a distilled student/CoroSAM and YOLOv8s+SSL respectively.
@@ -42,13 +42,15 @@ A foundation-model track runs in parallel: **CoroSAM / MedficientSAM / Rep-MedSA
 - **Preprocessing:** CLAHE + unsharp.
 - **Metrics:** Dice ≥ 0.75 **and clDice** (connectivity) + HD95.
 
-### 2.2 Stenosis / lesion detection — floor F1 ≥ 0.55 (recall-weighted)
+### 2.2 Stenosis / lesion detection — floor F1 ≥ 0.57 (recall-weighted)
+
+*(Earlier drafts of this doc stated F1 ≥ 0.55; the operative floor — matching `configs/stenosis_yolo.yaml` and `PROJECT_TRACKER.md` — is 0.57. Corrected here 2026-08-02, not silently.)*
 
 **Data:** ARCADE (task 2), Danilov (8,325 coronary images, COCO boxes).
 
 - **Qualifying edge pick:** **YOLOv8s + pseudo-label SSL** (~0.56). Plain YOLO11n (~0.54) is below the floor — step up to 's', add SSL/distillation, or fall back to RT-DETR-R18.
 - **Accuracy teachers:** U-Mamba BOT (F1 0.6879 — the bar to chase) and StenUNet (F1 0.5348); distill or run as an offline second-read.
-- **Metrics:** F1 ≥ 0.55 with a **recall-weighted** operating point (missing a stenosis is the costly error); COCO AP/AR on Danilov.
+- **Metrics:** F1 ≥ 0.57 with a **recall-weighted** operating point (missing a stenosis is the costly error); COCO AP/AR on Danilov.
 
 ### 2.3 Cerebral DSA (temporal) + catheter/guidewire tracking
 
@@ -114,7 +116,7 @@ PyTorch + MONAI + nnU-Netv2 + Ultralytics; HuggingFace PEFT (LoRA/adapters) for 
 |---|---|---|---|
 | 0 | 1 | Repo + data prep: standardize ARCADE/DCA1/Danilov; CLAHE; edge-benchmark harness | One command reproduces a split + a latency report on the target device |
 | 1 | 1–4 | Coronary segmentation: nnU-Net teacher → distill → ONNX-INT8 | **Dice ≥ 0.75 AND clDice within ~3% of teacher**; real-time on target |
-| 2 | 3–6 | Stenosis detection: YOLOv8s + pseudo-label SSL; U-Mamba/StenUNet teachers | **F1 ≥ 0.55, recall-weighted**; COCO AP tracked on Danilov |
+| 2 | 3–6 | Stenosis detection: YOLOv8s + pseudo-label SSL; U-Mamba/StenUNet teachers | **F1 ≥ 0.57, recall-weighted**; COCO AP tracked on Danilov |
 | 2.5 | 5–7 | **Calibration & abstention:** ECE + reliability + OOD defer path | ECE < ~0.05; defer path demonstrably fires on OOD inputs |
 | 3 | 5–10 | Temporal + catheter: keyframe 2D + ConvLSTM-lite (DSANet offline second-read); YOLO11n+ByteTrack | DSA Dice ~0.85; real-time tracking |
 | 3b | 8–11 | **Cross-vendor validation:** leave-one-vendor-out | Held-out-vendor Dice/F1 gap reported and within agreed bound |

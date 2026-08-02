@@ -137,21 +137,22 @@ class DiagnosticOrchestrator:
 
 # PHASE A — Anchor: get stenosis above its accuracy floor
 
-**Why first-in-parallel:** the orchestrator can only *report* a finding whose model clears its floor. Stenosis (F1 0.214 < 0.57) is the anchor. Until it clears, the registry marks it `floor_ok: false` and the orchestrator emits it as **deferred "below-floor"** — the plumbing (Phases B–E) is built and tested regardless, but the product isn't clinically useful until A lands. These are **experiment tasks gated by a metric**, not TDD units; each has an explicit accept/reject gate and an archived `RESULTS.md`.
+**Why first-in-parallel:** the orchestrator can only *report* a finding whose model clears its floor. Stenosis (F1 0.291, up from 0.214 pre-CADICA — still < 0.57) is the anchor. Until it clears, the registry marks it `floor_ok: false` and the orchestrator emits it as **deferred "below-floor"** — the plumbing (Phases B–E) is built and tested regardless, but the product isn't clinically useful until A lands. These are **experiment tasks gated by a metric**, not TDD units; each has an explicit accept/reject gate and an archived `RESULTS.md`.
 
-### Task A1: CADICA run — measure the patient-diversity lift
+### Task A1: CADICA run — measure the patient-diversity lift — **DONE 2026-07-16**
 
 **Files:**
 - Run: `notebooks/kaggle_stenosis_plug_and_play.ipynb` (already fixed: single CADICA symlink cell, `--imgsz` handled)
 - Produce: `experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/RESULTS.md`
 
-- [ ] **Step 1:** On Kaggle: GPU + Internet ON; `+ Add Input` ARCADE, danilov, CADICA (`selectedVideos` present — verified: run tag shows `arcade+cadica+danilov`).
-- [ ] **Step 2:** DRY_RUN=True → Run All. Confirm the §3b leakage audit prints `LEAKAGE CHECK PASSED` and the CADICA count is non-zero (`cadica: N frames`, N>0).
-- [ ] **Step 3:** DRY_RUN=False → Run All. Full 150-epoch run.
-- [ ] **Step 4 (GATE):** Read the `[PASS]/[FAIL] F1 vs floor 0.57` line and the recall.
+- [x] **Step 1:** On Kaggle: GPU + Internet ON; `+ Add Input` ARCADE, danilov, CADICA (`selectedVideos` present — verified: run tag shows `arcade+cadica+danilov`).
+- [x] **Step 2:** DRY_RUN=True → Run All. Confirm the §3b leakage audit prints `LEAKAGE CHECK PASSED` and the CADICA count is non-zero (`cadica: N frames`, N>0).
+- [x] **Step 3:** DRY_RUN=False → Run All. Full 150-epoch run.
+- [x] **Step 4 (GATE):** Read the `[PASS]/[FAIL] F1 vs floor 0.57` line and the recall.
   - **Accept** if F1 ≥ 0.57 AND recall ≥ 0.60 → set `floor_ok: true` for coronary_stenosis in `configs/orchestrator.yaml` (Phase D), archive best.pt, done with Phase A.
   - **Reject** (expected on first pass — 42 CADICA patients is still few) → record the delta vs 0.214 baseline, proceed to A2.
-- [ ] **Step 5:** Save `experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/RESULTS.md` (copy the format of the existing `_grouped/RESULTS.md`: split counts, F1/P/R/mAP, read-out, next lever). Commit the RESULTS.md (not weights).
+  - **Outcome (2026-07-16): Reject.** F1 0.291 / recall 0.271 / mAP50 0.209 — below the F1 ≥ 0.57 AND recall ≥ 0.60 gate (delta vs the 0.214 pre-CADICA baseline: **+0.077 F1**). `floor_ok` stays `false` in `configs/orchestrator.yaml`. Per this task's own branch above: **proceed to A2.**
+- [x] **Step 5:** Save `experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/RESULTS.md` (copy the format of the existing `_grouped/RESULTS.md`: split counts, F1/P/R/mAP, read-out, next lever). Commit the RESULTS.md (not weights). Archived at `experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/RESULTS.md` (see also `PROJECT_TRACKER.md:110`).
 
 ```bash
 git add experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/RESULTS.md

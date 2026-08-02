@@ -5,11 +5,15 @@ YOLO11s @ 768px on **ARCADE task-2 + Danilov (capped) + CADICA**. Target **F1 �
 the Mac. Runbook: [`pipelines/stage2_stenosis.md`](../pipelines/stage2_stenosis.md).
 Notebook: [`notebooks/kaggle_stenosis_plug_and_play.ipynb`](../notebooks/kaggle_stenosis_plug_and_play.ipynb).
 
-> **The lever is patients, not frames.** The honest, **patient-grouped** F1 is **0.214**
-> (ARCADE+Danilov) — *below* the **0.57** floor, and *below* ARCADE-only's **0.246**. Adding
-> Danilov's 8,325 near-duplicate frames (only 64 patients) actually **lowered** the honest metric,
-> which is why Danilov is now capped to 5 frames/patient. The bottleneck is **patient count**, so the
-> #1 accuracy move is adding patient-diverse data (CADICA, then others) — not more frames.
+> **The lever is patients, not frames.** The honest, **patient-grouped** F1 for ARCADE+Danilov
+> (no CADICA) was **0.214** — *below* the **0.57** floor, and *below* ARCADE-only's **0.246**.
+> Adding Danilov's 8,325 near-duplicate frames (only 64 patients) actually **lowered** the honest
+> metric, which is why Danilov is now capped to 5 frames/patient. The bottleneck is **patient
+> count**: adding CADICA's 42 patient-diverse patients lifted the honest, current result to
+> **F1 0.291 / recall 0.271 / mAP50 0.209** (`+CADICA` run, 2026-07-16 — see `PROJECT_TRACKER.md:110`)
+> — still below floor, but the biggest single-lever gain to date. The #1 accuracy move remains
+> adding more patient-diverse data, not more frames. *(Updated 2026-08-02; 0.214 kept above as the
+> pre-CADICA baseline, not erased.)*
 
 ---
 
@@ -78,7 +82,7 @@ Any subset works; a missing dataset is dropped from the config and skipped. XCAD
 | `datasets.cadica.root` | `data/raw/cadica` | Path to the CADICA download; `format: native`. `cadica_to_yolo` **skips silently** if the root is absent — set it to include the patient-diversity add. |
 | `val.conf` | `0.001` | Low eval confidence so recall (the clinically costly axis) isn't throttled at validation (`train_detector.val_kwargs`). Add `val.iou` to override NMS IoU. |
 | `target.f1` | `0.57` | F1 floor gate — `qualifies_det` PASS/FAIL. (Note: ARCADE stenosis SOTA ≈0.5, so 0.57 may exceed published — confirm with clinical stakeholders.) |
-| `target.recall` | *(commented)* | Optional **recall-first** second gate on top of F1 — a missed stenosis is the deadly error. Uncomment + set the clinical recall floor (e.g. `0.60`) to enable. |
+| `target.recall` | `0.60` | **Recall-first** second gate on top of F1 — a missed stenosis is the deadly error. Enabled 2026-07-17 (was commented out before); the clinical recall floor value still needs stakeholder sign-off. |
 | `model.pretrained_weights` | *(commented)* | Drop-in path to an SSL/angiography-pretrained backbone; `_load_pretrained_backbone` loads it `strict=False` before training (missing file/shape-mismatch = warn, not fatal). |
 
 Also relevant: `model: {name: yolo11s, imgsz: 768}` (the 's'+768 combo needed to clear the floor — nano/640 saturated at ~0.25, still edge-deployable), and `ssl: {pseudo_label, conf, seed: gdino}` for the SSL path.
@@ -98,5 +102,5 @@ Also relevant: `model: {name: yolo11s, imgsz: 768}` (the 's'+768 combo needed to
 ## 6 · What's still manual
 
 - **SSL backbone weights** — the self-supervised/angiography-pretrained checkpoint (`runs/ssl/xca_backbone.pt`) must be produced GPU-side; only the load hook is wired.
-- **Clinical recall floor** — `target.recall` is commented out; the actual floor needs clinical-stakeholder sign-off before the recall-first gate is enabled.
+- **Clinical recall floor** — `target.recall` was set to **0.60** and the recall-first gate enabled on 2026-07-17 (`configs/stenosis_yolo.yaml`; see `PROJECT_TRACKER.md:111`), superseding the earlier "commented out" state. The floor value itself still needs clinical-stakeholder sign-off.
 - **CADICA download** — fetch from Mendeley (`10.17632/p9bpx9ctcv`) and attach/point `datasets.cadica.root` by hand; the converter runs automatically once the root exists, but the download is not automated.

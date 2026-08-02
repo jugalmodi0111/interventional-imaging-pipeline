@@ -6,8 +6,15 @@ model weights path, display names for UI, finding label (data key), and `floor_o
 `floor_ok=False` is the safety default: the model exists but has not cleared its accuracy floor
 (Phase A acceptance gate). The orchestrator surfaces its finding as a deferred screening flag,
 never as a confident positive. Only flip to true when Phase A has validated F1>=0.57, recall>=0.60.
+
+`floor_ok` is fail-safe on parse: PyYAML's SafeLoader only resolves the literal tokens
+true/false/yes/no/on/off (case-insensitively, unquoted) to real booleans -- anything else
+(a typo, a quoted string, a number, null, a list) loads as a non-bool value. We only ever treat
+a genuine `True` object as floor_ok=True; every other value -- including missing -- downgrades to
+False (defer to human) rather than failing open.
 """
 from dataclasses import dataclass
+import warnings
 import yaml
 
 
@@ -22,7 +29,8 @@ class TaskEntry:
         display_name: Human-readable modality name for UI.
         finding_label: Data key for the finding (e.g., "coronary_stenosis").
         finding_display: Human-readable finding description for clinician report.
-        floor_ok: If False (default), the model is below accuracy floor -> defer to human.
+        floor_ok: If False (default), the model is below accuracy floor -> defer to human. Only a
+            genuine YAML boolean `true` sets this True; any malformed value fails safe to False.
     """
     modality: str
     task: str
@@ -46,11 +54,26 @@ def load_registry(path):
             finding_display: Clinical description
             floor_ok: true|false (optional, defaults to False)
 
+    `floor_ok` is fail-safe: only an unquoted YAML `true` (or `yes`/`on`) -- i.e. a value PyYAML's
+    SafeLoader actually resolves to the Python singleton `True` -- yields floor_ok=True. A missing
+    key yields False silently (the documented default). A *present but malformed* value (a typo, a
+    quoted string, a number, null, a list -- anything that isn't a real bool) also downgrades to
+    False rather than raising, so one bad entry can't take the whole registry down, but it is
+    reported via warnings.warn so an operator can catch the misconfiguration.
+
     Returns dict mapping modality name -> TaskEntry.
     """
     cfg = yaml.safe_load(open(path)) or {}
     reg = {}
     for mod, d in (cfg.get("modalities") or {}).items():
+        raw = d.get("floor_ok", False)
+        floor_ok = raw is True                      # only a genuine YAML bool `true` passes
+        if not floor_ok and "floor_ok" in d and raw is not False:
+            warnings.warn(
+                f"registry: modality {mod!r} has non-boolean floor_ok={raw!r} "
+                "(expected YAML true/false); failing safe to floor_ok=False (defer to human).",
+                stacklevel=2,
+            )
         reg[mod] = TaskEntry(
             modality=mod,
             task=d["task"],
@@ -58,7 +81,7 @@ def load_registry(path):
             display_name=d["display_name"],
             finding_label=d["finding_label"],
             finding_display=d["finding_display"],
-            floor_ok=bool(d.get("floor_ok", False))
+            floor_ok=floor_ok
         )
     return reg
 
