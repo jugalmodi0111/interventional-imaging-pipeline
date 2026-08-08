@@ -39,3 +39,9 @@ coremltools               # Apple silicon
 fastapi
 uvicorn
 python-multipart
+# ingest (Dialygo Phase 1: institutional DICOM handover -> de-identified frame store)
+pydicom>=3.0              # 3.x save_as(enforce_file_format=...) API is required by the fixture
+pylibjpeg                 # plugin host: supplies the JPEG-Lossless / JPEG-LS decoders cath-lab cine needs
+pylibjpeg-libjpeg         # JPEG Baseline/Extended/Lossless (1.2.840.10008.1.2.4.50/51/57/70)
+pylibjpeg-rle             # RLE Lossless (1.2.840.10008.1.2.5)
+openpyxl                  # vendor handovers ship the patient worksheet as .xlsx

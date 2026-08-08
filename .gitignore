@@ -26,3 +26,9 @@ nnUNet_results/
 outputs/**/interventional-imaging-pipeline/
 outputs/coronary_nb/
 .pytest_cache/
+
+# Dialygo ingest: scan/de-id working state, plus anything that could re-identify a patient
+.ingest/
+*.crosswalk.csv
+*.salt
+salt.bin
