@@ -1,0 +1,15 @@
+# Dialygo B5 / B9 LEGAL GATE -- read by src.ingest.clearance.require_clearance("real", ...).
+#
+# Flipping either flag to true is a LEGAL ACT, not a config tweak. It asserts that a signed,
+# executed agreement exists on file. Do not flip it to "unblock a run", to test something, or
+# because the drive is already plugged in. If you are not the person who can point at the executed
+# document, you are not the person who edits this file.
+#
+#   data_agreement_executed  (B5) -- institutional data-sharing / DPA covering these studies
+#   ip_agreement_executed    (B9) -- IP / engagement agreement covering this development work
+#
+# BOTH must be an unquoted YAML boolean `true` before any real patient data may be read. Anything
+# else -- "true", 1, yes-but-quoted, a typo, null, a list -- is treated as NOT executed and the
+# ingest refuses. Refusing is the safe outcome; there is no override flag by design.
+data_agreement_executed: false
+ip_agreement_executed: false
