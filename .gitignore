@@ -26,3 +26,6 @@ nnUNet_results/
 outputs/**/interventional-imaging-pipeline/
 outputs/coronary_nb/
 .pytest_cache/
+
+# Claude worktrees
+.claude/worktrees/
