@@ -149,8 +149,18 @@ def scan_tree(roots, out_dir, *, resume=True, mode="synthetic",
 
     if resume:
         done = set(manifest.load_state(state_path).get("done_dirs", []))
+        # Build set of already-recorded paths to avoid duplicating rows on mid-directory crash-resume
+        already_recorded = set()
+        if os.path.exists(files_path):
+            try:
+                for row in manifest.read_jsonl(files_path):
+                    already_recorded.add(row.get("path"))
+            except (OSError, json.JSONDecodeError):
+                # If files.jsonl is corrupted, proceed without dedup to fail gracefully
+                pass
     else:
         done = set()
+        already_recorded = set()
         if os.path.exists(files_path):
             os.remove(files_path)
 
@@ -169,8 +179,12 @@ def scan_tree(roots, out_dir, *, resume=True, mode="synthetic",
             for name in sorted(filenames):
                 if name in SKIP_NAMES:
                     continue
-                manifest.append_jsonl(files_path, _row(os.path.join(dirpath, name)))
-                n_new += 1
+                full_path = os.path.join(dirpath, name)
+                abs_path = os.path.abspath(full_path)
+                if abs_path not in already_recorded:
+                    manifest.append_jsonl(files_path, _row(full_path))
+                    already_recorded.add(abs_path)
+                    n_new += 1
             done.add(key)
             _checkpoint()                             # atomic: a torn checkpoint would skip dirs
     _checkpoint()

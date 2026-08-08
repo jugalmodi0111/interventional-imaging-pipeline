@@ -131,6 +131,57 @@ def test_scan_resume_does_not_duplicate_rows(drive, tmp_path):
     assert second["n_files"] == 7
 
 
+def test_scan_resume_does_not_duplicate_after_mid_directory_crash(drive, tmp_path):
+    """Simulate a crash mid-directory: files already appended, directory not marked done.
+
+    On resume, the walker re-enters the directory. Without deduplication, it would re-append
+    every file already recorded, creating duplicates in files.jsonl. This test verifies that
+    the scan correctly deduplicates on resume.
+    """
+    from src.ingest.manifest import read_jsonl, write_json_atomic
+    import json
+
+    out = tmp_path / ".ingest"
+    os.makedirs(out, exist_ok=True)
+
+    # Simulate a first run that crashes mid-directory STUDY_A/SER1.
+    # Two files from SER1 have been appended, but the directory is not yet marked done.
+    ser1_path = str(drive / "STUDY_A" / "SER1")
+    im1_path = str(drive / "STUDY_A" / "SER1" / "IM000001.dcm")
+    im2_path = str(drive / "STUDY_A" / "SER1" / "IM000002.dcm")
+
+    # Write pre-crash state: files.jsonl with two files from SER1
+    from src.ingest.scan import classify
+    rows = [
+        {"path": im1_path, "kind": classify(im1_path), "size": os.path.getsize(im1_path),
+         "head_key": "dummy:abc123"},
+        {"path": im2_path, "kind": classify(im2_path), "size": os.path.getsize(im2_path),
+         "head_key": "dummy:def456"},
+    ]
+    for row in rows:
+        from src.ingest.manifest import append_jsonl
+        append_jsonl(str(out / "files.jsonl"), row)
+
+    # Write pre-crash state: scan_state.json WITHOUT SER1 or its parent directories marked done
+    # (simulating that _checkpoint never ran after the crash)
+    write_json_atomic(
+        str(out / "scan_state.json"),
+        {"schema_version": "1.0", "site": "unknown", "roots": [str(drive)], "done_dirs": []}
+    )
+
+    # Now resume: should NOT duplicate the two files already in files.jsonl
+    rep = scan_tree([str(drive)], str(out), resume=True)
+
+    # Verify: 7 total rows (2 from pre-crash + 5 new), but 7 unique paths
+    final_rows = read_jsonl(str(out / "files.jsonl"))
+    assert len(final_rows) == 7, f"Expected 7 total rows, got {len(final_rows)}"
+    unique_paths = {r["path"] for r in final_rows}
+    assert len(unique_paths) == 7, f"Expected 7 unique paths, got {len(unique_paths)}"
+    # The two files from SER1 should appear exactly once each in the final rows
+    assert sum(1 for r in final_rows if r["path"] == im1_path) == 1, "IM000001.dcm duplicated"
+    assert sum(1 for r in final_rows if r["path"] == im2_path) == 1, "IM000002.dcm duplicated"
+
+
 def test_scan_no_resume_rewrites_instead_of_appending(drive, tmp_path):
     from src.ingest.manifest import read_jsonl
 
