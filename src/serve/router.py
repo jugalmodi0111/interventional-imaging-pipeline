@@ -4,8 +4,19 @@ The pure `decide_modality` is torch-free and unit-tested. `ModalityRouter` lazy-
 MobileNetV3 student (edge) and delegates the keep/defer call to `decide_modality`. Safety default:
 DEFER (modality 'unknown') whenever the top class is weak or the top-two margin is thin — a wrong
 route sends a frame to the wrong disease model, so ambiguity must never resolve to a guess.
+
+Fail-safe on the router's OWN failure: `classify` collapses every load/run failure — missing
+weights file, timm/torch not installed, corrupt state_dict, a torch error mid-forward — into
+`RouterUnavailable` (defined next to its sibling `ModelUnavailable` in orchestrator.py). The
+orchestrator converts it into a deferred study (reason "router-unavailable"), so an undeployed
+router never escapes as a raw ModuleNotFoundError/FileNotFoundError and is operationally
+distinguishable from a genuine bug.
 """
 from dataclasses import dataclass
+
+from src.serve.orchestrator import RouterUnavailable   # torch-free import; no cycle (orchestrator
+                                                       # imports this module only lazily, inside
+                                                       # build_orchestrator's body)
 
 
 @dataclass
@@ -62,8 +73,18 @@ class ModalityRouter:
         return {l: float(pi) for l, pi in zip(self.labels, p)}
 
     def classify(self, frame):
-        """Preprocess + run the classifier, then defer all keep/defer judgment to decide_modality."""
-        return decide_modality(self._probs(frame),
+        """Preprocess + run the classifier, then defer all keep/defer judgment to decide_modality.
+
+        Any failure to LOAD or RUN the classifier itself (missing weights file, timm/torch not
+        installed, a corrupt state_dict, a torch error mid-forward) raises `RouterUnavailable`
+        instead of the raw exception: the orchestrator catches exactly that type and defers the
+        study with reason "router-unavailable" — never a crash, never a guess."""
+        try:
+            probs = self._probs(frame)
+        except Exception as e:
+            raise RouterUnavailable(
+                f"modality router unavailable (weights={self.weights!r}): {e}") from e
+        return decide_modality(probs,
                                keep_thr=self.thresholds["keep_thr"],
                                margin=self.thresholds["margin"],
                                quality_thr=self.thresholds["quality_thr"])

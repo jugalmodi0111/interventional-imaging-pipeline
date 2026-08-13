@@ -103,6 +103,18 @@ def test_router_init_sets_default_thresholds_without_loading_model():
     assert r.size == 224
 
 
+def test_router_classify_missing_weights_raises_router_unavailable():
+    # Real _probs path, no monkeypatch: the weights file does not exist (and timm may not even be
+    # installed in the serving env). classify must collapse EVERY load/run failure -- missing
+    # weights file, ImportError for timm/torch, a corrupt state_dict -- into RouterUnavailable,
+    # never leak a raw ModuleNotFoundError/FileNotFoundError to the caller. The orchestrator
+    # catches exactly this type and defers with reason "router-unavailable".
+    from src.serve.orchestrator import RouterUnavailable
+    r = ModalityRouter("this/path/does/not/exist.pt", ["coronary_angiography", "other_xray"])
+    with pytest.raises(RouterUnavailable):
+        r.classify(frame=object())
+
+
 def test_router_module_imports_without_torch():
     # Guardrail: importing src.serve.router must not drag in torch/timm/cv2 — those belong only
     # inside ModalityRouter._load/_probs. Run in a FRESH interpreter (subprocess) so torch already

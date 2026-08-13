@@ -63,7 +63,8 @@ def load_registry(path):
 
     Returns dict mapping modality name -> TaskEntry.
     """
-    cfg = yaml.safe_load(open(path)) or {}
+    with open(path) as f:
+        cfg = yaml.safe_load(f) or {}
     reg = {}
     for mod, d in (cfg.get("modalities") or {}).items():
         raw = d.get("floor_ok", False)

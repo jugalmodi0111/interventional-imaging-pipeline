@@ -37,5 +37,4 @@ conversion + the clDice gate + on-device benchmark run on the Mac — see `docs/
 ```bash
 make export-coreml      MODEL=runs/coronary/student.pt      # seg student -> palettized .mlpackage
 make export-coreml-yolo MODEL=runs/stenosis/.../best.pt     # YOLO -> .mlpackage (one call)
-python -m src.serve.realtime --model runs/coronary/student.mlpackage --task seg --source clip.mp4 --show
 ```

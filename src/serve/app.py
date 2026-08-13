@@ -1,11 +1,11 @@
 """Minimal local inference service (FastAPI) wrapping a CoreML edge model.
 
-For the network-API topology (another app POSTs a frame). For real-time per-frame overlay use
-`realtime.py` in-process instead — an HTTP hop per frame won't keep up. Air-gapped cath labs
-should bind to localhost only.
+For the network-API topology (another app POSTs a frame). Air-gapped cath labs should bind to
+localhost only. Model One (B3) screens a SINGLE STILL FRAME: there is no video path (deleted per
+the 2026-08-03 audit, P3) — `/analyze?kind=video` is a deliberate 400 refusal.
 
     uvicorn src.serve.app:app --host 127.0.0.1 --port 8000
-    MODEL=runs/coronary/student.mlpackage TASK=seg uvicorn src.serve.app:app
+    MODEL=outputs/coronary_student_clgeodice/student.mlpackage TASK=seg uvicorn src.serve.app:app
 """
 import os
 import numpy as np
@@ -15,7 +15,9 @@ try:
 except Exception:                                         # keep import-safe without fastapi
     FastAPI = None
 
-MODEL_PATH = os.environ.get("MODEL", "runs/coronary/student.mlpackage")
+# Default seg weights: the gate-passed CLGeoDice student run (the old default,
+# runs/coronary/student.mlpackage, no longer exists on disk).
+MODEL_PATH = os.environ.get("MODEL", "outputs/coronary_student_clgeodice/student.mlpackage")
 TASK = os.environ.get("TASK", "seg")
 _model = None
 
@@ -52,17 +54,19 @@ if FastAPI is not None:
 
     # --- /analyze: diagnostic-orchestrator-backed endpoint ---------------------------------------
     #
-    # Reachability layer for `DiagnosticOrchestrator` (src/serve/orchestrator.py): one route, image
-    # or video, always a JSON `StudyReport`. `build_orchestrator` is imported here (module scope of
-    # this `if` block, not top-of-file) and only actually invoked lazily inside `_get_orch` -- it in
-    # turn only touches torch/ultralytics/coremltools several calls deeper, still lazily -- so this
-    # module stays import-safe with no heavy deps installed (see test_router.py /
-    # test_orchestrator.py's subprocess import-safety guardrails for the pattern this follows).
+    # Reachability layer for `DiagnosticOrchestrator` (src/serve/orchestrator.py): one route, one
+    # single still frame in, always a JSON `StudyReport` out. `build_orchestrator` is imported here
+    # (module scope of this `if` block, not top-of-file) and only actually invoked lazily inside
+    # `_get_orch` -- it in turn only touches torch/ultralytics/coremltools several calls deeper,
+    # still lazily -- so this module stays import-safe with no heavy deps installed (see
+    # test_router.py / test_orchestrator.py's subprocess import-safety guardrails for the pattern
+    # this follows).
     #
     # Safety default is DEFER, not guess (same posture the orchestrator itself takes): a corrupt or
-    # undecodable upload, an unsupported `kind`, or a model/config that fails to load all resolve to
-    # either a clean 4xx or a deferred `StudyReport` -- never an unhandled 500 that hides the outcome,
-    # and never a confident result built on bytes we couldn't actually read.
+    # undecodable upload, or a model/config that fails to load, resolves to a deferred `StudyReport`;
+    # an unsupported `kind` (video included -- Model One has no video path) is a clean 400 contract
+    # refusal -- never an unhandled 500 that hides the outcome, and never a confident result built
+    # on bytes we couldn't actually read.
     from src.serve.orchestrator import build_orchestrator
     from src.serve.report import StudyReport
 
@@ -94,14 +98,24 @@ if FastAPI is not None:
 
     @app.post("/analyze")
     async def analyze(file: UploadFile = File(...), kind: str = "image"):
-        """POST an image frame or a cine clip (`?kind=image|video`, default image) and get back a
-        `StudyReport` JSON body -- possible finding + clinician-review flag, never an autonomous
-        diagnosis claim. Never a raw 500: every failure mode (bad `kind`, corrupt/undecodable upload,
-        an orchestrator/model that fails to load, or any other unexpected error) resolves to either a
-        clean 4xx or a 200 carrying a deferred report."""
-        if kind not in ("image", "video"):
+        """POST a single still frame (`?kind=image`, the default) and get back a `StudyReport`
+        JSON body -- possible finding + clinician-review flag, never an autonomous diagnosis claim.
+        `kind=video` is a deliberate 400 contract refusal: Model One (B3) screens a single still
+        frame; the cine/video path was deleted (2026-08-03 audit, P3). Never a raw 500: every other
+        failure mode (bad `kind`, corrupt/undecodable upload, an orchestrator/model that fails to
+        load, or any other unexpected error) resolves to either a clean 4xx or a 200 carrying a
+        deferred report."""
+        if kind == "video":
+            # Contract refusal, not a defer: nothing about a video request is analyzable here, and
+            # a deferred 200 would wrongly imply a clip was screened. Refused before the
+            # orchestrator is even built -- this is a property of the endpoint, not of a healthy
+            # model stack.
+            raise HTTPException(
+                status_code=400,
+                detail="video analysis is not part of Model One; submit a single frame")
+        if kind != "image":
             raise HTTPException(status_code=400,
-                                detail=f"unsupported kind={kind!r}; expected 'image' or 'video'")
+                                detail=f"unsupported kind={kind!r}; expected 'image'")
 
         raw = await file.read()
 
@@ -110,25 +124,6 @@ if FastAPI is not None:
         except Exception:
             # Router/registry config missing or unloadable -- defer rather than crash the request.
             return _deferred_report("model-unavailable")
-
-        if kind == "video":
-            import tempfile
-            suffix = os.path.splitext(file.filename or "")[1] or ".mp4"
-            fd, path = tempfile.mkstemp(suffix=suffix)
-            try:
-                try:
-                    with os.fdopen(fd, "wb") as f:
-                        f.write(raw)
-                    report = orch.analyze_video(path)
-                except Exception:
-                    # analyze_video already defers on every documented failure (undecodable clip,
-                    # zero usable frames, missing weights); this also nets a failure writing the
-                    # tempfile itself, so a genuine unanticipated bug still can't take the endpoint
-                    # down as a raw 500.
-                    return _deferred_report("analysis-error")
-            finally:
-                os.remove(path)
-            return report.to_dict()
 
         frame = _decode_image(raw)
         if frame is None:

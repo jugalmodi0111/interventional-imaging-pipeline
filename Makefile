@@ -13,7 +13,7 @@ train-avf-audio:
 	$(PY) -m src.train.train_audio --config configs/avf_audio.yaml
 export:
 	$(PY) -m src.export.to_onnx --weights $(MODEL)
-	$(PY) -m src.export.quantize_int8 --onnx $(MODEL:.pt=.onnx)
+	$(PY) -m src.export.quantize_int8 --model $(MODEL:.pt=.onnx)
 bench:
 	$(PY) -m src.eval.edge_benchmark --model $(MODEL)
 
@@ -41,14 +41,10 @@ prep-catheter:
 	$(PY) -m src.data_prep.cathaction_to_yolo --config configs/catheter_track.yaml
 train-catheter:
 	$(PY) -m src.train.train_detector --config configs/catheter_track.yaml
-track:                    # WEIGHTS=runs/catheter/.../best.pt SOURCE=clip.mp4
-	$(PY) -m src.serve.track --weights $(WEIGHTS) --source $(SOURCE)
-track-eval:               # WEIGHTS=best.pt SOURCE=data/raw/cathaction/img  (many clips -> per-clip fps + fragmentation)
-	$(PY) -m src.serve.track --weights $(WEIGHTS) --source $(SOURCE) --per-clip --device cpu
+# (track / track-eval / realtime targets removed with the serve video path -- 2026-08-03 audit P3:
+#  Model One is single-still-frame only; src/serve/{track,realtime,temporal_vote}.py were deleted)
 
-# --- Inference (Mac): per-frame overlay + audit trail ---
-realtime:                 # MODEL=...mlpackage TASK=seg|det SOURCE=clip.mp4|frames/|camera
-	$(PY) -m src.serve.realtime --model $(MODEL) --task $(TASK) --source $(SOURCE) --show
+# --- Inference (Mac): local API ---
 serve:                    # local API; MODEL=...mlpackage TASK=seg|det
 	MODEL=$(MODEL) TASK=$(TASK) uvicorn src.serve.app:app --host 127.0.0.1 --port 8000
 

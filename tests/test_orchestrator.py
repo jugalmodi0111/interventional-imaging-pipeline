@@ -1,7 +1,9 @@
 """Test the diagnostic orchestrator: route -> resolve -> infer -> typed findings -> StudyReport.
 
-Router and model are both fakes/injected -- no torch import anywhere in this file, matching the
-import-safe convention the orchestrator itself follows.
+Router and model are both fakes/injected -- no torch import at module scope anywhere in this file,
+matching the import-safe convention the orchestrator itself follows. (One fail-safe test runs a
+REAL ModalityRouter whose lazy load is EXPECTED to fail -- torch/timm import is attempted at
+runtime there and allowed to be missing.)
 """
 from src.serve.registry import TaskEntry
 from src.serve.router import ModalityDecision
@@ -163,152 +165,62 @@ def test_unsupported_modality_does_not_run_model_or_audit(monkeypatch):
     assert ran == [] and calls == []
 
 
-# --- analyze_video: sample -> route each -> temporal-vote aggregate ------------------------------
+# --- router-unavailable fail-safe: an undeployed/unloadable router must defer, never crash -------
+# (The video path -- analyze_video, temporal voting, tracking -- was deleted per the 2026-08-03
+# audit P3 decision: Model One screens a single still frame only. Its tests went with it.)
 
-def test_video_majority_modality_and_temporal_vote(monkeypatch):
-    # 5 coronary frames; a stenosis box present in >=2 -> aggregate keeps it, single-frame flicker dropped
-    router = FakeRouter(ModalityDecision("coronary_angiography", None, True, 0.95, False, "confident"))
-    per_frame_boxes = [
-        [(10, 10, 30, 30, 0.8)],           # f0 real
-        [(10, 10, 30, 30, 0.82)],          # f1 real (2 hits -> kept)
-        [],                                # f2
-        [(200, 200, 210, 210, 0.4)],       # f3 flicker (1 hit -> dropped by min_hits=2)
-        [(11, 11, 31, 31, 0.79)],          # f4 real
-    ]
-    calls = {"i": 0}
-    def factory(entry):
-        def model(frame):
-            b = per_frame_boxes[calls["i"]]; calls["i"] += 1
-            return {"boxes": b, "top_conf": max([x[4] for x in b], default=0.0), "deferred": False}
-        return model
-    orch = DiagnosticOrchestrator(router, _reg(floor_ok=True), factory)
-    monkeypatch.setattr(orch, "_iter_frames", lambda path, stride, max_frames: iter([object()] * 5))
-    r = orch.analyze_video("clip.mp4")
-    assert r.modality == "coronary_angiography" and r.frames_analyzed == 5
-    assert r.findings[0].label == "coronary_stenosis"
-    # the flicker box (only 1 hit) must not survive aggregation into a kept detection
-    assert all(not (abs(b[0] - 200) < 5) for b in r.findings[0].boxes)
+class UnavailableRouter:
+    """Mimics ModalityRouter's fail-safe contract: classify raises RouterUnavailable when the
+    router itself (weights file / timm / torch) could not be loaded or run."""
+    weights = "runs/router/does-not-exist.pt"
+
+    def classify(self, frame):
+        raise orch_mod.RouterUnavailable("weights missing")
 
 
-# --- C3: temporal voting may filter what is REPORTED, but must not silence the DEFER decision ----
-
-def test_video_defers_on_pre_vote_low_confidence_even_if_track_dropped_by_vote(monkeypatch):
-    # One box at conf 0.55 on ONE sampled frame: through analyze_frame this defers as
-    # 'low-confidence' (the calibrated confidence sits inside the defer band). Through
-    # analyze_video, temporal voting drops the 1-hit track (min_hits=2 default) before its
-    # confidence ever reaches triage -- silencing the defer and reporting "clean" on a study the
-    # model was actually uncertain about. The defer decision must be derived from evidence BEFORE
-    # voting; only the reported boxes are allowed to be post-vote.
-    router = FakeRouter(ModalityDecision("coronary_angiography", None, True, 0.95, False, "confident"))
-    per_frame_boxes = [[], [(0, 0, 10, 10, 0.55)], []]
-    calls = {"i": 0}
-
-    def factory(entry):
-        def model(frame):
-            b = per_frame_boxes[calls["i"]]
-            calls["i"] += 1
-            return {"boxes": b, "top_conf": max([x[4] for x in b], default=0.0), "deferred": False}
-        return model
-
-    orch = DiagnosticOrchestrator(router, _reg(floor_ok=True), factory)
-    monkeypatch.setattr(orch, "_iter_frames", lambda path, stride, max_frames: iter([object()] * 3))
-    r = orch.analyze_video("clip.mp4")
-    assert r.deferred is True
-    assert r.findings[0].reason == "low-confidence"
+def test_analyze_frame_router_unavailable_defers_with_distinct_reason():
+    # A router that cannot load/run must not escape as a raw exception (the old escape path was
+    # ModuleNotFoundError -> the endpoint's generic 'analysis-error'); it must defer with its OWN
+    # reason so operators can tell "router not deployed" apart from "genuine bug".
+    orch = DiagnosticOrchestrator(UnavailableRouter(), _reg(floor_ok=True),
+                                  _det_factory([(0, 0, 9, 9, 0.9)]))
+    r = orch.analyze_frame(frame_gray=object())
+    assert r.deferred is True and r.defer_reason == "router-unavailable"
+    assert r.findings == [] and r.modality == "unknown"
+    assert r.frames_analyzed == 1
 
 
-# --- I1: the video path must not run the detector on frames the router refused to route -----------
-
-def test_video_detector_never_runs_on_frames_router_did_not_route(monkeypatch):
-    # f1 is router-uncertain and f2 is routed to a DIFFERENT modality -- neither may reach the
-    # majority modality's ("coronary_angiography") detector.
-    f0, f1, f2, f3 = object(), object(), object(), object()
-    coronary = ModalityDecision("coronary_angiography", None, True, 0.95, False, "confident")
-    router_deferred = ModalityDecision("unknown", None, True, 0.4, True, "router-uncertain")
-    other_modality = ModalityDecision("cerebral_dsa", None, True, 0.9, False, "confident")
-    per_frame_decision = {f0: coronary, f1: router_deferred, f2: other_modality, f3: coronary}
-
-    class MultiRouter:
-        def classify(self, frame):
-            return per_frame_decision[frame]
-
-    ran_on = []
-
-    def factory(entry):
-        def model(frame):
-            ran_on.append(frame)
-            return {"boxes": [], "top_conf": 0.0, "deferred": False}
-        return model
-
-    orch = DiagnosticOrchestrator(MultiRouter(), _reg(floor_ok=True), factory)
-    monkeypatch.setattr(orch, "_iter_frames", lambda path, stride, max_frames: iter([f0, f1, f2, f3]))
-    orch.analyze_video("clip.mp4")
-    assert ran_on == [f0, f3]
-
-
-def test_video_excluded_frames_leave_index_preserving_gap_not_compacted(monkeypatch):
-    # Two real detections at f0 and f4 are separated by three router-deferred frames (f1..f3) --
-    # a true index gap of 3, which exceeds temporal_vote's default max_gap=1, so they must NOT
-    # link into one persistent track. Compacting the excluded frames out of the sequence instead
-    # of leaving an empty slot per excluded frame would make f0/f4 adjacent (gap 0) and wrongly
-    # link them into a 2-hit "persistent" track.
-    f0, f1, f2, f3, f4 = [object() for _ in range(5)]
-    coronary = ModalityDecision("coronary_angiography", None, True, 0.95, False, "confident")
-    router_deferred = ModalityDecision("unknown", None, True, 0.4, True, "router-uncertain")
-    per_frame_decision = {f0: coronary, f1: router_deferred, f2: router_deferred,
-                          f3: router_deferred, f4: coronary}
-
-    class MultiRouter:
-        def classify(self, frame):
-            return per_frame_decision[frame]
-
-    box = (10, 10, 30, 30, 0.8)
-
-    def factory(entry):
-        def model(frame):
-            return {"boxes": [box], "top_conf": 0.8, "deferred": False}
-        return model
-
-    orch = DiagnosticOrchestrator(MultiRouter(), _reg(floor_ok=True), factory)
-    monkeypatch.setattr(orch, "_iter_frames",
-                        lambda path, stride, max_frames: iter([f0, f1, f2, f3, f4]))
-    r = orch.analyze_video("clip.mp4")
-    # each detection is a lone hit, too far apart (true gap 3) to link -> dropped by min_hits=2 ->
-    # nothing survives temporal voting to be reported.
-    assert r.findings[0].boxes == []
-
-
-def test_video_with_zero_frames_defers_never_reports_clean(monkeypatch):
-    # An undecodable clip / empty iterator must defer -- never a clean report on no evidence.
-    router = FakeRouter(ModalityDecision("coronary_angiography", None, True, 0.95, False, "confident"))
-    orch = DiagnosticOrchestrator(router, _reg(floor_ok=True), _det_factory([(0, 0, 9, 9, 0.9)]))
-    monkeypatch.setattr(orch, "_iter_frames", lambda path, stride, max_frames: iter([]))
-    r = orch.analyze_video("clip.mp4")
-    assert r.deferred is True and r.frames_analyzed == 0 and r.findings == []
-
-
-def test_video_all_frames_router_deferred_defers_whole_study_and_skips_model(monkeypatch):
-    # Every sampled frame is router-uncertain -> defer the whole study; no wasted inference.
+def test_analyze_frame_router_unavailable_skips_model_and_audit(monkeypatch):
+    # No modality decision -> no task model may run and nothing genuine exists to audit-log
+    # (mirrors the model-unavailable path).
+    calls = []
+    monkeypatch.setattr(orch_mod, "record", lambda *a, **kw: calls.append((a, kw)))
     ran = []
+
     def factory(entry):
         def _fail(frame):
             ran.append(True)
-            raise AssertionError("model must not run when every frame's router call deferred")
+            raise AssertionError("model must not run when the router is unavailable")
         return _fail
-    router = FakeRouter(ModalityDecision("unknown", None, True, 0.4, True, "router-uncertain"))
-    orch = DiagnosticOrchestrator(router, _reg(floor_ok=True), factory)
-    monkeypatch.setattr(orch, "_iter_frames", lambda path, stride, max_frames: iter([object()] * 3))
-    r = orch.analyze_video("clip.mp4")
-    assert r.deferred is True and r.defer_reason == "router-uncertain"
-    assert r.frames_analyzed == 3 and r.findings == [] and ran == []
+
+    orch = DiagnosticOrchestrator(UnavailableRouter(), _reg(floor_ok=True), factory)
+    r = orch.analyze_frame(frame_gray=object())
+    assert r.deferred is True and ran == [] and calls == []
 
 
-def test_video_unsupported_modality_defers_no_findings(monkeypatch):
-    router = FakeRouter(ModalityDecision("cerebral_dsa", None, True, 0.9, False, "confident"))
+def test_analyze_frame_real_router_missing_weights_defers_router_unavailable():
+    # REAL ModalityRouter, no monkeypatch (the one test in this file that may touch the heavy
+    # stack at runtime -- the torch/timm import is attempted and allowed to fail): the weights
+    # file does not exist (and/or timm is not installed), so the router's own load fails.
+    # analyze_frame must return a deferred report with reason "router-unavailable" -- never let a
+    # ModuleNotFoundError/FileNotFoundError escape to the endpoint as a generic analysis-error.
+    from src.serve.router import ModalityRouter
+    router = ModalityRouter("this/path/does/not/exist.pt",
+                            ["coronary_angiography", "other_xray"])
     orch = DiagnosticOrchestrator(router, _reg(floor_ok=True), _det_factory([]))
-    monkeypatch.setattr(orch, "_iter_frames", lambda path, stride, max_frames: iter([object()] * 3))
-    r = orch.analyze_video("clip.mp4")
-    assert r.deferred is True and r.defer_reason == "no-findings" and r.findings == []
+    r = orch.analyze_frame(frame_gray=object())
+    assert r.deferred is True and r.defer_reason == "router-unavailable"
+    assert r.findings == []
 
 
 # --- build_orchestrator: real router+registry+infer wiring (D3) ----------------------------------
@@ -382,15 +294,6 @@ def test_analyze_frame_model_unavailable_skips_audit(monkeypatch):
     orch = DiagnosticOrchestrator(router, _reg(floor_ok=True), orch_mod._model_factory)
     orch.analyze_frame(frame_gray=object())
     assert calls == []
-
-
-def test_analyze_video_defers_whole_study_on_missing_weights_without_crash(monkeypatch):
-    router = FakeRouter(ModalityDecision("coronary_angiography", None, True, 0.95, False, "confident"))
-    orch = DiagnosticOrchestrator(router, _reg(floor_ok=True), orch_mod._model_factory)
-    monkeypatch.setattr(orch, "_iter_frames", lambda path, stride, max_frames: iter([object()] * 3))
-    r = orch.analyze_video("clip.mp4")
-    assert r.deferred is True and r.defer_reason == "model-unavailable"
-    assert r.frames_analyzed == 3 and r.findings == []
 
 
 # --- import-safety guardrail: importing this module must never pull in torch/ultralytics/coremltools

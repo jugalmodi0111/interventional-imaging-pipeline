@@ -6,7 +6,7 @@ router:
 modalities:
   coronary_angiography:
     task: det
-    model_path: runs/stenosis/arcade+cadica+danilov_yolo11s_768_e150/base/weights/best.pt
+    model_path: experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/run/weights/best.pt
     display_name: Coronary angiography
     finding_label: coronary_stenosis
     finding_display: Possible coronary artery stenosis (blockage) — clinician review required
