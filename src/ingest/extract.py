@@ -29,10 +29,20 @@ path in the message -- a silent zero-frame extraction would read downstream as "
 images".
 
 ``cv2``/``numpy``/``pydicom`` are imported inside functions. Runs standalone:
-``python -m src.ingest.extract <dicom-or-video> --out-root <clean_root>/<site>``.
+``python -m src.ingest.extract <dicom-or-video> --out-root <clean_root>/<site> --mode synthetic``.
+``--mode`` is REQUIRED on the CLI (audit P0.1 fix #1); there is no default.
 """
 import hashlib
 import os
+from pathlib import Path
+
+#: Absolute, repo-root-anchored path to the B5/B9 clearance marker. Resolved from THIS file's own
+#: location, never from the process cwd -- audit P0.1 fix #2: the old CLI silently fell back to
+#: clearance.DEFAULT_CLEARANCE_PATH (a bare relative string) whenever --clearance was omitted, so
+#: a two-line YAML dropped anywhere a real-mode run happened to be launched from could open the
+#: gate. --clearance-override-for-tests is the only way to point a run at a different marker, and
+#: it exists for tests only.
+DEFAULT_CLEARANCE_PATH = Path(__file__).resolve().parents[2] / "configs" / "ingest_clearance.yaml"
 
 FRAME_PATTERN = "f%05d.png"
 SIDECAR_SCHEMA = "dialygo.ingest.sidecar/1"
@@ -283,7 +293,13 @@ def extract_video(path, out_root, *, site, pseudo_patient, series_idx):
 
 
 def main(argv=None):
-    """CLI: extract one study file -- DICOM (de-identified + pixel-screened) or exported video."""
+    """CLI: extract one study file -- DICOM (de-identified + pixel-screened) or exported video.
+
+    --mode is REQUIRED, no default (audit P0.1 fix #1). The clearance marker is always resolved
+    from DEFAULT_CLEARANCE_PATH (<repo-root>/configs/ingest_clearance.yaml) unless
+    --clearance-override-for-tests names a different marker -- that flag exists for tests only and
+    must never be used against a real drive (audit P0.1 fix #2).
+    """
     import argparse
     import json
 
@@ -292,17 +308,24 @@ def main(argv=None):
     from src.ingest.manifest import sha256_file
 
     ap = argparse.ArgumentParser(
-        description="Extract de-identified PNG frames from one DICOM or exported video.")
+        description="Extract de-identified PNG frames from one DICOM or exported video.",
+        allow_abbrev=False)          # a bare "--clearance ..." must NOT abbreviation-match
+                                     # --clearance-override-for-tests (audit P0.1 fix #2)
     ap.add_argument("source", help="path to a DICOM file or an exported .avi/.mp4 clip")
     ap.add_argument("--out-root", required=True, help="output root: <clean_root>/<site>")
     ap.add_argument("--site", default="inu", help="site code used in the stem grammar")
     ap.add_argument("--salt", default="_keys/salt.bin", help="path to the de-id salt file")
     ap.add_argument("--series-idx", type=int, default=1)
-    ap.add_argument("--mode", default="synthetic", choices=["synthetic", "real"],
-                    help="Dialygo B5/B9 clearance mode -- real requires an executed agreement")
-    ap.add_argument("--clearance", default=None, help="path to the signed clearance record")
+    ap.add_argument("--mode", required=True, choices=["synthetic", "real"],
+                    help="REQUIRED, no default -- Dialygo B5/B9 clearance mode; 'real' requires "
+                         "an executed agreement")
+    ap.add_argument("--clearance-override-for-tests", dest="clearance", default=None,
+                    help="TEST-ONLY: override the clearance marker path. Production runs must "
+                         "never pass this -- the marker is always read from "
+                         f"{DEFAULT_CLEARANCE_PATH}.")
     args = ap.parse_args(argv)
-    require_clearance(args.mode, **({"clearance_path": args.clearance} if args.clearance else {}))
+    clearance_path = args.clearance if args.clearance is not None else DEFAULT_CLEARANCE_PATH
+    require_clearance(args.mode, clearance_path=clearance_path)
 
     salt = load_or_create_salt(args.salt)
     if os.path.splitext(args.source)[1].lower() in VIDEO_EXTS:

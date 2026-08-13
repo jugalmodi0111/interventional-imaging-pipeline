@@ -13,7 +13,7 @@ import pytest
 from src.ingest.extract import (extract_series, extract_video, frame_stem, stem_prefix, to_8bit,
                                 write_sidecar)
 
-from tests.fixtures.synthetic_dicom import make_xa_dataset
+from tests.fixtures.synthetic_dicom import make_xa_dataset, write_dataset
 
 PID = "inu_3f9c21b04e"          # shape of deid.pseudo_id(...) output
 ROWS = COLS = 64
@@ -251,3 +251,82 @@ def test_extract_video_raises_when_the_source_cannot_be_opened(tmp_path):
 
     assert not os.path.exists(os.path.join(str(tmp_path / "out"), "frames")), \
         "a failed open must not leave an empty frames/ directory behind"
+
+
+# --- P0.1: module-level clearance-gate hardening on the CLI --------------------------------------
+
+
+def test_main_requires_mode(tmp_path):
+    """Fix #1: --mode has no default -- omitting it must fail argument parsing."""
+    from src.ingest.extract import main as extract_main
+
+    ds_path = write_dataset(make_xa_dataset(n_frames=2, rows=ROWS, cols=COLS), tmp_path / "case.dcm")
+
+    with pytest.raises(SystemExit) as ei:
+        extract_main([str(ds_path), "--out-root", str(tmp_path / "out")])
+    assert ei.value.code == 2
+    assert not (tmp_path / "out").exists()
+
+
+def test_main_smoke_extracts_a_dicom_series(tmp_path, capsys):
+    from src.ingest.extract import main as extract_main
+
+    ds_path = write_dataset(make_xa_dataset(n_frames=3, rows=ROWS, cols=COLS), tmp_path / "case.dcm")
+    out_root = tmp_path / "out"
+
+    rc = extract_main([str(ds_path), "--out-root", str(out_root), "--mode", "synthetic",
+                       "--salt", str(tmp_path / "salt.bin")])
+
+    assert rc == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["n_frames"] == 3
+
+
+def test_main_clearance_override_for_tests_flag_is_honoured(tmp_path):
+    """Fix #2: the renamed flag still works, so tests can point real-mode runs at a fixture."""
+    from src.ingest.extract import main as extract_main
+
+    ds_path = write_dataset(make_xa_dataset(n_frames=2, rows=ROWS, cols=COLS), tmp_path / "case.dcm")
+    marker = tmp_path / "clearance.yaml"
+    marker.write_text("data_agreement_executed: true\nip_agreement_executed: true\n")
+
+    rc = extract_main([str(ds_path), "--out-root", str(tmp_path / "out"), "--mode", "real",
+                       "--salt", str(tmp_path / "salt.bin"),
+                       "--clearance-override-for-tests", str(marker)])
+
+    assert rc == 0
+
+
+def test_main_rejects_the_old_bare_clearance_flag(tmp_path):
+    """The old --clearance flag name must be REJECTED outright, not silently accepted as an
+    argparse abbreviation of --clearance-override-for-tests."""
+    from src.ingest.extract import main as extract_main
+
+    ds_path = write_dataset(make_xa_dataset(n_frames=2, rows=ROWS, cols=COLS), tmp_path / "case.dcm")
+    marker = tmp_path / "clearance.yaml"
+    marker.write_text("data_agreement_executed: true\nip_agreement_executed: true\n")
+
+    with pytest.raises(SystemExit) as ei:
+        extract_main([str(ds_path), "--out-root", str(tmp_path / "out"), "--mode", "real",
+                     "--salt", str(tmp_path / "salt.bin"), "--clearance", str(marker)])
+    assert ei.value.code == 2
+
+
+def test_main_real_mode_ignores_a_cwd_relative_clearance_marker(tmp_path, monkeypatch):
+    """Fix #2: without the override flag, the marker must resolve from the repo root, never from
+    a marker that happens to sit at a cwd-relative 'configs/ingest_clearance.yaml'."""
+    from src.ingest.clearance import ClearanceError
+    from src.ingest.extract import main as extract_main
+
+    fake_cwd = tmp_path / "fake_cwd"
+    (fake_cwd / "configs").mkdir(parents=True)
+    (fake_cwd / "configs" / "ingest_clearance.yaml").write_text(
+        "data_agreement_executed: true\nip_agreement_executed: true\n")
+    ds_path = write_dataset(make_xa_dataset(n_frames=2, rows=ROWS, cols=COLS),
+                            tmp_path / "case.dcm")
+    monkeypatch.chdir(fake_cwd)
+
+    with pytest.raises(ClearanceError):
+        extract_main([str(ds_path), "--out-root", str(fake_cwd / "out"), "--mode", "real",
+                     "--salt", str(fake_cwd / "salt.bin")])
+    assert not (fake_cwd / "out").exists()

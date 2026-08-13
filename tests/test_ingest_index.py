@@ -287,6 +287,21 @@ def test_build_index_writes_sop_duplicate_row_with_kept_copy(tmp_path, handover)
     assert dup_rows[0]["kept_copy"] == str(dup)          # the 0_burn copy won lexicographically
 
 
+def test_build_index_refuses_synthetic_mode_against_a_volumes_row(tmp_path):
+    """P0.1 fix #3: build_index corroborates the synthetic claim against files_rows' own paths --
+    a fabricated /Volumes row is refused without touching a real mounted drive."""
+    out = tmp_path / "index_out"
+    rows = [{"path": "/Volumes/CATHLAB_HANDOVER/STUDY_A/im1.dcm", "kind": "dicom",
+            "size": 100, "head_key": "hk"}]
+
+    with pytest.raises(ClearanceError) as ei:
+        build_index(rows, out, mode="synthetic", site="inu")
+
+    msg = str(ei.value)
+    assert "synthetic" in msg.lower() and "/Volumes" in msg
+    assert not out.exists()
+
+
 def test_build_index_refuses_real_mode_before_the_agreement(tmp_path, handover):
     """Dialygo B5: the clearance gate is checked before a single header is opened."""
     rows, _ = handover
@@ -334,3 +349,98 @@ def test_main_returns_nonzero_when_clearance_refuses(tmp_path, handover, monkeyp
 
     assert rc == 2
     assert "clearance" in capsys.readouterr().err.lower()
+
+
+# --- P0.1: module-level clearance-gate hardening ------------------------------------------------
+
+
+def test_main_requires_mode(tmp_path, handover, monkeypatch, capsys):
+    """Fix #1: --mode has no default -- omitting it must fail argument parsing."""
+    from src.ingest import index_dicom
+
+    rows, _ = handover
+    files_jsonl = tmp_path / "files.jsonl"
+    files_jsonl.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["index_dicom", "--files", str(files_jsonl), "--out", str(tmp_path / "out"),
+         "--site", "inu"],
+    )
+    with pytest.raises(SystemExit) as ei:
+        index_dicom.main()
+    assert ei.value.code == 2
+    assert "--mode" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_main_clearance_override_for_tests_flag_is_honoured(tmp_path, handover, monkeypatch):
+    """Fix #2: the renamed flag still works, so tests can point real-mode runs at a fixture."""
+    from src.ingest import index_dicom
+
+    rows, _ = handover
+    files_jsonl = tmp_path / "files.jsonl"
+    files_jsonl.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    marker = tmp_path / "clearance.yaml"
+    marker.write_text("data_agreement_executed: true\nip_agreement_executed: true\n")
+    out = tmp_path / "out"
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["index_dicom", "--files", str(files_jsonl), "--out", str(out), "--mode", "real",
+         "--site", "inu", "--clearance-override-for-tests", str(marker)],
+    )
+    rc = index_dicom.main()
+
+    assert rc == 0
+    assert out.exists()
+
+
+def test_main_rejects_the_old_bare_clearance_flag(tmp_path, handover, monkeypatch):
+    """The old --clearance flag name must be REJECTED outright, not silently accepted as an
+    argparse abbreviation of --clearance-override-for-tests."""
+    from src.ingest import index_dicom
+
+    rows, _ = handover
+    files_jsonl = tmp_path / "files.jsonl"
+    files_jsonl.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    marker = tmp_path / "clearance.yaml"
+    marker.write_text("data_agreement_executed: true\nip_agreement_executed: true\n")
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["index_dicom", "--files", str(files_jsonl), "--out", str(tmp_path / "out"),
+         "--mode", "real", "--site", "inu", "--clearance", str(marker)],
+    )
+    with pytest.raises(SystemExit) as ei:
+        index_dicom.main()
+    assert ei.value.code == 2
+
+
+def test_main_real_mode_ignores_a_cwd_relative_clearance_marker(tmp_path, handover, monkeypatch,
+                                                                capsys):
+    """Fix #2: without the override flag, the marker must resolve from the repo root, never from
+    a marker that happens to sit at a cwd-relative 'configs/ingest_clearance.yaml'."""
+    from src.ingest import index_dicom
+
+    rows, _ = handover
+    files_jsonl = tmp_path / "files.jsonl"
+    files_jsonl.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    fake_cwd = tmp_path / "fake_cwd"
+    (fake_cwd / "configs").mkdir(parents=True)
+    (fake_cwd / "configs" / "ingest_clearance.yaml").write_text(
+        "data_agreement_executed: true\nip_agreement_executed: true\n")
+    monkeypatch.chdir(fake_cwd)
+
+    out = fake_cwd / "out"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["index_dicom", "--files", str(files_jsonl), "--out", str(out), "--mode", "real",
+         "--site", "inu"],
+    )
+    rc = index_dicom.main()
+
+    assert rc == 2
+    assert "clearance" in capsys.readouterr().err.lower()
+    assert not out.exists()

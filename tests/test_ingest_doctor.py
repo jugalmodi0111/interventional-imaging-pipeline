@@ -201,3 +201,27 @@ def test_main_exits_nonzero_when_not_ok(tmp_path, capsys):
     assert rc != 0
     assert "FAIL" in out
     assert "ok=False" in out
+
+
+def test_ingest_sites_config_is_b5_safe():
+    """The shipped site config must not point at any real drive.
+
+    Adapted from the Task 16 plan: VALID_MODES = ("synthetic", "real") in
+    src/ingest/clearance.py -- "cleared" is not a mode, so this checks
+    mode == "synthetic" rather than the plan's original "cleared" claim
+    (audit 2026-08-03 P1, Task 16 row).
+    """
+    import yaml
+
+    cfg_path = Path(__file__).resolve().parents[1] / "configs" / "ingest_sites.yaml"
+    assert cfg_path.is_file(), f"{cfg_path} missing"
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert cfg["site"] == "inu"
+    assert cfg["drive_roots"] == [], (
+        "drive_roots must ship EMPTY — populating it starts real-patient "
+        "processing and is gated on the B5 data-use agreement")
+    assert cfg["work_dir"] == ".ingest/inu"
+    assert cfg["data_raw"] == "data/raw"
+    assert cfg["link_name"] == "avf_fistulography"
+    assert cfg["mode"] == "synthetic"
+    assert "clean_root" in cfg

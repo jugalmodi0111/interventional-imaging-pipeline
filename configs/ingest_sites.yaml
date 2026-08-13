@@ -1,0 +1,15 @@
+# Dialygo ingest — institutional fistulography site config (src/ingest/).
+# One site today (Institute of Nephro-Urology). Copy this block per site when B6
+# external validation brings a second one online.
+site: inu                                                        # short site slug; appears in every stem: avf_<site>_<pid_hex10>_s<NN>_<FFFFF>
+drive_roots: []                                                  # HARD GATE (B5): empty until the institutional data-use agreement executes. Populating this list is the action that starts processing real patient data — do not add a path to satisfy a test, a demo, or a deadline. Until then: synthetic DICOM only (see tests/fixtures). B9 (IP/engagement agreement) must also be executed before real-data development begins.
+clean_root: ~/dialygo_clean                                      # de-identified tree, OUTSIDE the repo and inside the environment the B5 agreement governs: <clean_root>/<site>/{dicom,frames,sidecar,_keys}/
+work_dir: .ingest/inu                                            # in-repo working artifacts (gitignored): files.jsonl, scan_state.json, dicom_index.jsonl, index_errors.jsonl, phi_audit.md, qa_review.jsonl
+data_raw: data/raw                                               # where the symlink lands; already gitignored (.gitignore:5) so a link cannot carry PHI into version control
+link_name: avf_fistulography                                     # data/raw/avf_fistulography -> <clean_root>/<site>/frames  (matches configs/avf_fistulography.yaml data.root)
+mode: synthetic                                                  # synthetic|real — checked by src/ingest/clearance.require_clearance against configs/ingest_clearance.yaml; VALID_MODES = ("synthetic", "real"), there is no "cleared" mode; 'real' requires the executed agreement
+# Second site (B6 external validation, >=1 non-source site) — uncomment and fill when identified:
+# site: ext1
+# drive_roots: []
+# clean_root: ~/dialygo_clean_ext1
+# work_dir: .ingest/ext1

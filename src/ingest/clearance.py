@@ -15,6 +15,7 @@ never to a confident-looking success.
 CLI:  python -m src.ingest.clearance --mode real
 """
 import os
+from pathlib import Path
 
 import yaml
 
@@ -76,6 +77,38 @@ def require_clearance(mode, clearance_path=DEFAULT_CLEARANCE_PATH):
         "Only an unquoted YAML `true` counts; a quoted \"true\", a 1, a typo, null or a list all "
         "read as NOT executed. Until legal sign-off lands, run with mode='synthetic' against the "
         "synthetic fixture (tests/fixtures/synthetic_dicom.py).")
+
+
+def refuse_synthetic_against_mounted_drive(mode, paths):
+    """Corroborate a `mode="synthetic"` claim against the paths it is actually about to touch.
+
+    `mode` is a string the caller typed on the command line, not a fact `require_clearance` can
+    verify on its own -- and the audit proved that a two-line synthetic claim happily walked a real
+    cathlab export. Mirrors `scripts/ingest_hdd.py`'s `check_paths`: any path that resolves under
+    "/Volumes/" (a mounted drive on macOS, where every real handover in this project is mounted)
+    while `mode == "synthetic"` is refused with a ClearanceError. A no-op for every other mode --
+    `mode == "real"` already requires a signed B5/B9 marker via `require_clearance`, which is a
+    strictly stronger check than a path prefix.
+
+    `paths` may contain `None`/empty entries (a malformed row, an unset field); those are ignored
+    rather than raised on, since they carry no location to corroborate.
+    """
+    if mode != "synthetic":
+        return
+    hits = sorted({
+        str(p) for p in paths
+        if p is not None and str(p).strip() != ""
+        and str(Path(str(p)).resolve()).startswith("/Volumes/")
+    })
+    if hits:
+        raise ClearanceError(
+            "Dialygo B5/B9 REFUSAL: mode='synthetic' was declared, but the following path(s) "
+            "resolve under /Volumes/ (a mounted drive):\n  " + "\n  ".join(hits) + "\n"
+            "Declaring synthetic while pointing at a mounted drive is exactly the bypass the "
+            "audit flagged (P0.1 fix #3) -- a two-line YAML would then be all that stood between "
+            "this run and real patient data. Use mode='real' with an executed B5/B9 clearance "
+            "marker instead."
+        )
 
 
 def main():

@@ -20,8 +20,15 @@ import argparse
 import json
 from pathlib import Path
 
-from src.ingest.clearance import require_clearance
+from src.ingest.clearance import refuse_synthetic_against_mounted_drive, require_clearance
 from src.ingest.manifest import append_jsonl, provenance, write_json_atomic
+
+#: Absolute, repo-root-anchored path to the B5/B9 clearance marker. Resolved from THIS file's own
+#: location, never from the process cwd -- audit P0.1 fix #2: the old CLI default was the bare
+#: relative string "configs/ingest_clearance.yaml", so a two-line YAML dropped anywhere a real-mode
+#: run happened to be launched from could open the gate. --clearance-override-for-tests is the
+#: only way to point a run at a different marker, and it exists for tests only.
+DEFAULT_CLEARANCE_PATH = Path(__file__).resolve().parents[2] / "configs" / "ingest_clearance.yaml"
 
 #: DICOM keywords captured for every instance. Identifying tags are included on purpose: this
 #: index lives on the cleared drive beside the source data (never in the repo) and is the input
@@ -145,7 +152,7 @@ def build_hierarchy(records):
 
 
 def build_index(files_rows, out_dir, *, mode="synthetic",
-                clearance_path="configs/ingest_clearance.yaml", site="unknown"):
+                clearance_path=DEFAULT_CLEARANCE_PATH, site="unknown"):
     """Index every kind="dicom" row, dedupe by SOP, and write the Phase 2 artifacts.
 
     Writes <out_dir>/dicom_index.jsonl (one JSON object per unique SOP instance),
@@ -174,6 +181,11 @@ def build_index(files_rows, out_dir, *, mode="synthetic",
     two runs of the same drive produce byte-identical output.
     """
     require_clearance(mode, clearance_path)
+
+    # P0.1 fix #3: corroborate the synthetic claim against the paths this run is about to open --
+    # runs before out.mkdir() so a fabricated /Volumes/... row is refused before anything is
+    # written.
+    refuse_synthetic_against_mounted_drive(mode, [row.get("path") for row in files_rows if row])
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -241,28 +253,42 @@ def build_index(files_rows, out_dir, *, mode="synthetic",
 
 
 def main():
-    """CLI: python -m src.ingest.index_dicom --files files.jsonl --out out/ [--site inu]
+    """CLI: python -m src.ingest.index_dicom --files files.jsonl --out out/ --mode synthetic
+    [--site inu]
 
     Prints the counts dict as JSON on stdout. Returns 2 (not a traceback) when the clearance
     gate refuses, so an operator sees a clear refusal rather than a crash.
+
+    --mode is REQUIRED, no default (audit P0.1 fix #1). The clearance marker is always resolved
+    from DEFAULT_CLEARANCE_PATH (<repo-root>/configs/ingest_clearance.yaml) unless
+    --clearance-override-for-tests names a different marker -- that flag exists for tests only and
+    must never be used against a real drive (audit P0.1 fix #2).
     """
     import sys
 
     from src.ingest.clearance import ClearanceError
     from src.ingest.manifest import read_jsonl
 
-    ap = argparse.ArgumentParser(description="Phase 2: index DICOM headers from a scan manifest.")
+    ap = argparse.ArgumentParser(
+        description="Phase 2: index DICOM headers from a scan manifest.",
+        allow_abbrev=False)          # a bare "--clearance ..." must NOT abbreviation-match
+                                     # --clearance-override-for-tests (audit P0.1 fix #2)
     ap.add_argument("--files", required=True, help="Phase 1 files.jsonl")
     ap.add_argument("--out", required=True, help="output directory for Phase 2 artifacts")
-    ap.add_argument("--mode", default="synthetic", choices=["synthetic", "real"])
-    ap.add_argument("--clearance", default="configs/ingest_clearance.yaml")
+    ap.add_argument("--mode", required=True, choices=["synthetic", "real"],
+                    help="REQUIRED, no default -- 'real' needs an executed B5/B9 marker")
+    ap.add_argument("--clearance-override-for-tests", dest="clearance", default=None,
+                    help="TEST-ONLY: override the clearance marker path. Production runs must "
+                         "never pass this -- the marker is always read from "
+                         f"{DEFAULT_CLEARANCE_PATH}.")
     ap.add_argument("--site", default="unknown")
     args = ap.parse_args()
 
+    clearance_path = args.clearance if args.clearance is not None else DEFAULT_CLEARANCE_PATH
     try:
         counts = build_index(
             read_jsonl(args.files), args.out,
-            mode=args.mode, clearance_path=args.clearance, site=args.site,
+            mode=args.mode, clearance_path=clearance_path, site=args.site,
         )
     except ClearanceError as exc:
         print(f"refused: clearance gate rejected mode={args.mode!r}: {exc}", file=sys.stderr)

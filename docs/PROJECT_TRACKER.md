@@ -1,7 +1,7 @@
 # Project Tracker — Interventional Imaging Pipeline
 
 **Purpose:** single source of truth for *what is done* and *what is next*. Check boxes as you go.
-**Last updated:** 2026-08-02 · **Owner:** jugalmodi0111 · **Contact:**
+**Last updated:** 2026-08-13 · **Owner:** jugalmodi0111 · **Contact:**
 **Companion docs:** [`Model_Pipeline_Playbook.md`](Model_Pipeline_Playbook.md) (rationale) · [`DATASETS.md`](DATASETS.md) · [`COLAB_MAC_SPLIT.md`](COLAB_MAC_SPLIT.md) · repo [`README.md`](../README.md)
 
 ---
@@ -57,6 +57,26 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 - [x] `src/eval/audit.py` (25) — input-hash + model-version + prediction log
 - [x] `src/export/to_onnx.py` (14), `quantize_int8.py` (10), `to_coreml.py` (52), `coreml_validate.py` (78), `yolo_to_coreml.py` (21)
 - [x] `src/serve/infer.py` (84), `predict_image.py` (65), `realtime.py` (84), `track.py` (121, ByteTrack), `app.py` (53, FastAPI)
+- [x] `src/ingest/` (2026-08-13) — Dialygo institutional fistulography ingest, **synthetic DICOM
+  only**: `clearance.py` (B5/B9 mode gate — `VALID_MODES = ("synthetic", "real")`, there is no
+  "cleared" mode), `manifest.py` (jsonl / atomic-json / provenance / sha256), `scan.py`
+  (read-only drive inventory), `index_dicom.py` (header-only index + SOP dedupe +
+  `index_errors.jsonl` drop accounting), `deid.py` (HMAC pseudonyms + PS3.15 tag scrub +
+  residual-PHI gate + crosswalk writer — **its CLI only provisions the salt and takes no
+  `--mode`**, unlike the other phase CLIs), `extract.py` (VOI-LUT → 8-bit PNG frames at
+  `<clean_root>/<site>/frames/<stem_prefix>/fNNNNN.png` + sidecars, one source file per CLI
+  invocation), `pixel_deid.py` (OCR-free burned-in-overlay screen + mask, wired into
+  `extract_series`), `labels.py` (CSV/COCO/mask-dir adapters + reporting join, B7 verbatim
+  passthrough), `link.py` (`data/raw/avf_fistulography` → clean tree, symlink never a copy),
+  `doctor.py` (mounted / links / manifest / **no-PHI-in-repo** health check — read-only, no
+  clearance gate by design). Driver: `scripts/ingest_hdd.py` runs all five phases end-to-end
+  (scan → index → PHI-audit checkpoint → deid → extract) against a mounted drive; resumable,
+  per-file failures logged to `*_errors.jsonl` rather than aborting the run. All `src/ingest/`
+  modules import torch- and cv2-free (lazy imports inside functions), expose `main()`, run as
+  `python -m src.ingest.<module>`. Wiring (Task 16, see §8 changelog): `configs/ingest_sites.yaml`
+  (ships with `drive_roots: []`) + `make ingest-scan|index|deid|extract|labels|link|doctor|hdd`.
+  Realignment plan T1.7 (`docs/superpowers/plans/2026-08-01-dialygo-realignment.md`): code-complete
+  against synthetic DICOM, wiring landed, real-drive run pending B5/B9.
 
 ### Stubs / partial (must implement before their stage can pass)
 - [x] ~~`src/train/train_seg.py`~~ — **implemented 2026-07-11** (was `NotImplementedError`). No longer blocks Stage 1.
@@ -216,6 +236,43 @@ Ground-truth from `src/` on 2026-07-11. Line counts in parens.
 
 ## 8. Changelog
 
+- **2026-08-13** — **`src/ingest/` wiring landed — configs, Makefile, docs (Task 16 of
+  `docs/superpowers/plans/2026-08-02-ingest-dicom-pipeline.md`).** Tasks 1–15 of that plan are
+  built and tested against **synthetic DICOM only** (Task 6, a standalone PHI-audit CLI, was
+  **skipped as a separate module** — its function is covered inline by
+  `scripts/ingest_hdd.py`'s `write_phi_audit()` checkpoint, which STOPS a real run until
+  `--ack-phi-audit` confirms a human has read the report). This entry adds Task 16, the wiring,
+  with four departures from the plan's original text per the 2026-08-03 audit-remediation plan
+  (P1, Task 16 row — verdict **blocked**, all four verified live against the actually-built
+  CLIs): (1) the plan's `MODE=cleared` is **not a valid mode**
+  (`VALID_MODES = ("synthetic", "real")` in `src/ingest/clearance.py`) — the Makefile uses
+  `MODE ?= synthetic` with real runs invoked as `MODE=real`; (2) every `make ingest-*` target is
+  wired against each CLI's argparse block **as actually built**, not as the plan assumed —
+  `scan`/`index_dicom`/`extract`/`pixel_deid` all take a **required** `--mode`, while `deid.py`'s
+  CLI only provisions the HMAC salt (`--salt --site --bytes`) and takes **no `--mode` at all**;
+  `extract`'s CLI de-identifies and screens one source file per invocation (positional `source`
+  argument, not a batch directory), so `ingest-extract` takes a `SOURCE=` variable; (3) this entry
+  does not repeat the plan's "every CLI takes `--mode`" claim, because `deid.py` and `doctor.py`
+  do not; (4) `pixel_deid.py` is now listed in both the §2 code inventory and the "every phase has
+  a CLI" check, which the plan's Definition of Done omitted. New targets: `ingest-scan`,
+  `ingest-index`, `ingest-deid` (salt provisioning only), `ingest-extract`, `ingest-labels`,
+  `ingest-link`, `ingest-doctor`, and `ingest-hdd` (the `scripts/ingest_hdd.py` end-to-end driver
+  — scan → index → PHI audit → deid → extract). All eight were smoke-tested end-to-end against the
+  synthetic DICOM fixture (`tests/fixtures/synthetic_dicom.py`) during this change, not just
+  `make -n` dry-run. `configs/ingest_sites.yaml` ships with `drive_roots: []` — the B5 gate
+  expressed as a file someone has to deliberately edit, with a new config-contract test
+  (`tests/test_ingest_doctor.py::test_ingest_sites_config_is_b5_safe`) asserting it stays that
+  way; `configs/ingest_clearance.yaml` (the legal gate itself) is untouched by this change and
+  still reads `data_agreement_executed: false` / `ip_agreement_executed: false`. The plan's own
+  test-count arithmetic (+42/+45) does not apply here — Tasks 1–15 already landed their own tests
+  in prior commits, so the suite stood at **641 passing** before this change; this task adds one
+  test. Full suite **642 passing** (0 failed) after this change.
+  **No real patient data was processed at any point.** Both gates remain CLOSED: **B5**
+  (institutional data-use agreement) and **B9** (IP/engagement agreement), per
+  `configs/ingest_clearance.yaml`. The HDD driver (`scripts/ingest_hdd.py`) is built and verified
+  end-to-end against synthetic DICOM only; a real run against an institutional drive is
+  **pending legal clearance** — `require_clearance` refuses `--mode real` until both flags in
+  `configs/ingest_clearance.yaml` are an unquoted YAML `true`.
 - **2026-08-02** — **Documentation consistency pass** (reconciliation audit, `docs/superpowers/plans/2026-08-01-dialygo-realignment.md` §3b). No code/config/test changes — docs only. (1) **Stenosis floor drift fixed**: the operative floor is **F1 ≥ 0.57** (matches `configs/stenosis_yolo.yaml target.f1`, unchanged); `Model_Pipeline_Playbook.md` (§0, §2.2 heading+metrics, roadmap table) and this tracker's Stage 2 accuracy-floor-gate line (§3.2) previously said 0.55 — corrected to 0.57 with an inline note that 0.55 was the stale figure, not a silent rewrite. `STAGE2_SETUP.md` and `COLAB_MAC_SPLIT.md` already said 0.57 — untouched. (2) **Calibration status contradiction fixed**: the Stage 2.5 summary row (§1) and the calibration code-inventory line (§2) said reliability/temp-scaling/OOD were TODO; the detailed §3.2.5 checklist already had them done (ECE 0.094→0.020, OOD-AUROC 0.907) — summary lines now match, preserving the two genuinely-open items (score a real model; wire `CoronaryDominance` tags into the defer path). (3) **`transformers`-missing claim corrected** in the 2026-07-12(b) changelog entry (§8): `transformers` is present at `requirements.txt:22`; `timm` is the package genuinely missing (needed for the T1.4 frozen-backbone classifier). Old text struck through, not deleted. (4) **`STAGE2_SETUP.md` refreshed**: the intro note and §6 "what's still manual" cited the pre-CADICA F1 0.214 and an unset `target.recall` as current; both superseded 2026-07-17/07-16 — updated to the current honest result (F1 0.291 / recall 0.271 / mAP50 0.209, +CADICA run) and to `target.recall: 0.60` (enabled, still pending clinical sign-off on the value), keeping 0.214 visible as the labeled prior baseline. (5) **Orchestrator plan Task A1 ticked**: `docs/superpowers/plans/2026-07-16-diagnostic-orchestrator.md` Task A1 (the CADICA run) completed 2026-07-16 but was left unchecked; steps now marked done and the gate outcome recorded (**Reject** — F1 0.291/recall 0.271 vs the F1≥0.57 AND recall≥0.60 gate — proceeding to A2 per the task's own branch), archived at `experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/RESULTS.md`. Its stale "F1 0.214 is the anchor" line was rebaselined to 0.291 (0.214 kept as the labeled pre-CADICA figure). Audit note: the audit's second citation for this rebaseline ("around line 865") did not correspond to any stale 0.214 reference at that location — nothing there needed changing.
 - **2026-07-18 (b)** — **Dry-run wiring verified + P2.1 harmonizer landed.** Pushed the updated notebook as Kaggle `jugalmodi0111/stenosis` v7 (DRY_RUN=True) → COMPLETE, all new §3c/§3d/§3e/§5b cells ran clean. Confirmed: **CADICA grouping+cap fix works** (leakage audit now `val ~14% by group`, was 34%; danilov 64 patients 0 ungrouped). **§3c annotation QA (model-independent) confirms the convention mismatch**: median box area arcade 0.0108 / cadica 0.0058 / **danilov 0.0029** (danilov `tiny_frac` 0.36) → Danilov is the outlier (matches the arcade-only 0.246 > +danilov 0.214 ablation). Acted on P2.1: **`src/data_prep/harmonize.py`** (+9 tests) clamps tiny boxes to a min w/h floor (config `harmonize.min_box_wh`, notebook §3f `HARMONIZE` flag, TRAIN-ONLY) + **`DROP_DANILOV`** toggle in §3. Fixed my own guardrail test to subprocess-isolate (same fix as `test_train_seg`). Suite **284 passed**. **Real 80-epoch run BLOCKED: jugalmodi0111 hit the 30h/week Kaggle GPU cap** — pending quota reset / alternate account / Colab.
 - **2026-07-18** — **Stage 2 Phase 2 tooling landed** (local, TDD, 3 parallel agents; disjoint files). Plan: [`STAGE2_PHASE2_POA.md`](STAGE2_PHASE2_POA.md). (1) **P2.1** `src/eval/annotation_qa.py` (+17 tests) — per-source box-geometry QA (percentiles, `tiny_frac`, boxes/img) to quantify the mAP50→mAP50-95 convention mismatch; notebook §3c. (2) **P2.2** `src/data_prep/balance.py` (+10 tests) — dataset-balanced oversampling (`bal_`-prefixed train-only copies, post-audit → leak-safe), notebook §3d (`BALANCE` flag); XCAD pseudo-label SSL wired via notebook §3e (auto-sets `ssl.unlabeled_dir=data/raw/xcad` when an *xcad* dataset is attached; SSL code already existed in `train_detector`). (3) **P2.3** `yolo_to_coreml.smoketest()` (+7 tests, `--smoketest`) — export + `.mlpackage` sanity-check; commented `yolo11m`/`1024` model toggles in `stenosis_yolo.yaml`. Notebook intro updated; suite **275 passed** (+1 pre-existing unrelated warning). All new modules import torch/cv2/coremltools-free. **Which lever to run is decided by the Phase-1 §5b outputs — GPU runs pending those numbers.**

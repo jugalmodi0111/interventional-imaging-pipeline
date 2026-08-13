@@ -369,11 +369,96 @@ def test_summarize_empty():
 
 def test_main_smoke(drive, tmp_path, monkeypatch, capsys):
     out = tmp_path / ".ingest"
-    monkeypatch.setattr("sys.argv", ["scan", "--src", str(drive), "--out", str(out)])
+    monkeypatch.setattr("sys.argv",
+                        ["scan", "--src", str(drive), "--out", str(out), "--mode", "synthetic"])
     assert main() == 0
     printed = capsys.readouterr().out
     assert '"n_files": 7' in printed
     assert (out / "files.jsonl").exists()
+
+
+# --- P0.1: module-level clearance-gate hardening ------------------------------------------------
+
+
+def test_main_requires_mode(drive, tmp_path, monkeypatch, capsys):
+    """Fix #1: --mode has no default -- omitting it must fail argument parsing, not silently run
+    against whatever --src was given."""
+    out = tmp_path / ".ingest"
+    monkeypatch.setattr("sys.argv", ["scan", "--src", str(drive), "--out", str(out)])
+    with pytest.raises(SystemExit) as ei:
+        main()
+    assert ei.value.code == 2
+    assert "--mode" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_main_clearance_override_for_tests_flag_is_honoured(tmp_path, monkeypatch):
+    """Fix #2: the renamed flag still works, so tests can point real-mode runs at a fixture."""
+    marker = tmp_path / "clearance.yaml"
+    marker.write_text("data_agreement_executed: true\nip_agreement_executed: true\n")
+    src = tmp_path / "src_root"
+    src.mkdir()
+    out = tmp_path / ".ingest"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["scan", "--src", str(src), "--out", str(out), "--mode", "real",
+         "--clearance-override-for-tests", str(marker)],
+    )
+    assert main() == 0
+    assert out.exists()
+
+
+def test_main_real_mode_ignores_a_cwd_relative_clearance_marker(tmp_path, monkeypatch):
+    """Fix #2: without the override flag, the marker must resolve from the repo root, never from
+    a marker that happens to sit at a cwd-relative 'configs/ingest_clearance.yaml' -- that is
+    exactly the two-line-YAML bypass the audit demonstrated."""
+    from src.ingest.clearance import ClearanceError
+
+    fake_cwd = tmp_path / "fake_cwd"
+    (fake_cwd / "configs").mkdir(parents=True)
+    (fake_cwd / "configs" / "ingest_clearance.yaml").write_text(
+        "data_agreement_executed: true\nip_agreement_executed: true\n")
+    src = tmp_path / "src_root"
+    src.mkdir()
+    monkeypatch.chdir(fake_cwd)
+
+    out = fake_cwd / ".ingest"
+    monkeypatch.setattr(
+        "sys.argv", ["scan", "--src", str(src), "--out", str(out), "--mode", "real"])
+    with pytest.raises(ClearanceError):
+        main()
+    assert not out.exists()
+
+
+def test_main_rejects_the_old_bare_clearance_flag(tmp_path, monkeypatch):
+    """The old --clearance flag name must be REJECTED outright, not silently accepted as an
+    argparse abbreviation of --clearance-override-for-tests -- an abbreviation match would let
+    exactly the pre-fix invocation keep working under the new name."""
+    marker = tmp_path / "clearance.yaml"
+    marker.write_text("data_agreement_executed: true\nip_agreement_executed: true\n")
+    src = tmp_path / "src_root"
+    src.mkdir()
+    monkeypatch.setattr(
+        "sys.argv",
+        ["scan", "--src", str(src), "--out", str(tmp_path / ".ingest"), "--mode", "real",
+         "--clearance", str(marker)],
+    )
+    with pytest.raises(SystemExit) as ei:
+        main()
+    assert ei.value.code == 2
+
+
+def test_scan_tree_refuses_synthetic_mode_against_a_volumes_root(tmp_path):
+    """Fix #3: declaring mode='synthetic' while pointing at a mounted drive is refused, without
+    ever touching a real /Volumes path."""
+    from src.ingest.clearance import ClearanceError
+
+    out = tmp_path / ".ingest"
+    with pytest.raises(ClearanceError) as ei:
+        scan_tree(["/Volumes/CATHLAB_HANDOVER"], str(out), mode="synthetic")
+    msg = str(ei.value)
+    assert "synthetic" in msg.lower() and "/Volumes" in msg
+    assert not out.exists()
 
 
 def test_module_import_is_torch_cv2_and_pydicom_free():

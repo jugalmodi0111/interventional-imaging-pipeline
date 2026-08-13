@@ -11,6 +11,7 @@ from src.ingest.clearance import (
     is_cleared,
     main,
     read_clearance,
+    refuse_synthetic_against_mounted_drive,
     require_clearance,
 )
 
@@ -125,6 +126,46 @@ def test_shipped_config_is_unexecuted():
     assert c.get(DATA_FLAG) is False
     assert c.get(IP_FLAG) is False
     assert is_cleared(c) is False
+
+
+# ---------------------------------------------------------------------------
+# P0.1 fix #3: refuse_synthetic_against_mounted_drive -- corroborate the claim
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_synthetic_passes_for_tmp_path_sources(tmp_path):
+    """Ordinary synthetic-fixture paths under tmp_path must never be refused."""
+    refuse_synthetic_against_mounted_drive(
+        "synthetic", [str(tmp_path / "drive" / "a.dcm"), str(tmp_path / "drive" / "b.dcm")]
+    )  # must not raise
+
+
+def test_refuse_synthetic_refuses_a_volumes_path():
+    """A fabricated /Volumes path is refused without ever touching a real mounted drive."""
+    with pytest.raises(ClearanceError) as ei:
+        refuse_synthetic_against_mounted_drive(
+            "synthetic", ["/Volumes/CATHLAB_HANDOVER/STUDY_A/im1.dcm"]
+        )
+    msg = str(ei.value)
+    assert "synthetic" in msg and "/Volumes" in msg
+
+
+def test_refuse_synthetic_names_every_offending_path():
+    with pytest.raises(ClearanceError) as ei:
+        refuse_synthetic_against_mounted_drive(
+            "synthetic", ["/Volumes/A/x.dcm", "/Volumes/B/y.dcm"]
+        )
+    msg = str(ei.value)
+    assert "/Volumes/A/x.dcm" in msg and "/Volumes/B/y.dcm" in msg
+
+
+def test_refuse_synthetic_is_a_noop_outside_synthetic_mode():
+    """mode='real' already requires a signed marker -- this check must not add a second gate."""
+    refuse_synthetic_against_mounted_drive("real", ["/Volumes/CATHLAB_HANDOVER/im1.dcm"])
+
+
+def test_refuse_synthetic_ignores_none_and_empty_paths():
+    refuse_synthetic_against_mounted_drive("synthetic", [None, "", "  "])  # must not raise
 
 
 def test_main_returns_nonzero_when_not_cleared(tmp_path, monkeypatch, capsys):

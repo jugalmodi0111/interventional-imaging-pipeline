@@ -21,14 +21,23 @@ Nothing here runs against real patient data until require_clearance passes -- it
 statement in scan_tree, before any walk, stat or mkdir, and `mode` defaults to "synthetic"
 (Dialygo B5/B9).
 
-CLI:  python -m src.ingest.scan --src /Volumes/HANDOVER --out .ingest --site site_a
+CLI:  python -m src.ingest.scan --src /Volumes/HANDOVER --out .ingest --site site_a --mode real
+      --mode is REQUIRED on the CLI (audit P0.1 fix #1); there is no default.
 """
 import argparse
 import json
 import os
+from pathlib import Path
 
 from src.ingest import manifest
-from src.ingest.clearance import DEFAULT_CLEARANCE_PATH, require_clearance
+from src.ingest.clearance import refuse_synthetic_against_mounted_drive, require_clearance
+
+#: Absolute, repo-root-anchored path to the B5/B9 clearance marker. Resolved from THIS file's own
+#: location, never from the process cwd -- audit P0.1 fix #2: the old CLI default was
+#: clearance.DEFAULT_CLEARANCE_PATH, a bare relative string, so a two-line YAML dropped anywhere a
+#: real-mode run happened to be launched from could open the gate. --clearance-override-for-tests
+#: is the only way to point a run at a different marker, and it exists for tests only.
+DEFAULT_CLEARANCE_PATH = Path(__file__).resolve().parents[2] / "configs" / "ingest_clearance.yaml"
 
 FILES_JSONL = "files.jsonl"
 STATE_JSON = "scan_state.json"
@@ -142,6 +151,10 @@ def scan_tree(roots, out_dir, *, resume=True, mode="synthetic",
         roots = [roots]
     roots = [str(r) for r in roots]
 
+    # P0.1 fix #3: corroborate the synthetic claim -- runs before the missing-root check below so
+    # a fabricated /Volumes/... root is refused by the gate rather than blessed as "not found".
+    refuse_synthetic_against_mounted_drive(mode, roots)
+
     missing = [r for r in roots if not os.path.isdir(r)]
     if missing:
         raise ValueError(
@@ -234,19 +247,33 @@ def scan_tree(roots, out_dir, *, resume=True, mode="synthetic",
 
 
 def main():
-    """CLI entry point. --mode defaults to 'synthetic': real drives need an executed B5/B9 marker."""
+    """CLI entry point.
+
+    --mode is REQUIRED, no default (audit P0.1 fix #1): a real drive must never be walked because
+    a flag was merely omitted. The clearance marker is always resolved from
+    DEFAULT_CLEARANCE_PATH (<repo-root>/configs/ingest_clearance.yaml) unless
+    --clearance-override-for-tests names a different marker -- that flag exists for tests only and
+    must never be used against a real drive (audit P0.1 fix #2).
+    """
     ap = argparse.ArgumentParser(
-        description="Phase 1 read-only inventory of an institutional handover drive.")
+        description="Phase 1 read-only inventory of an institutional handover drive.",
+        allow_abbrev=False)          # a bare "--clearance ..." must NOT abbreviation-match
+                                     # --clearance-override-for-tests (audit P0.1 fix #2)
     ap.add_argument("--src", nargs="+", required=True, help="one or more roots to walk")
     ap.add_argument("--out", default=".ingest", help="output dir (must be outside --src)")
-    ap.add_argument("--mode", default="synthetic", choices=["synthetic", "real"])
-    ap.add_argument("--clearance", default=DEFAULT_CLEARANCE_PATH)
+    ap.add_argument("--mode", required=True, choices=["synthetic", "real"],
+                    help="REQUIRED, no default -- 'real' needs an executed B5/B9 marker")
+    ap.add_argument("--clearance-override-for-tests", dest="clearance", default=None,
+                    help="TEST-ONLY: override the clearance marker path. Production runs must "
+                         "never pass this -- the marker is always read from "
+                         f"{DEFAULT_CLEARANCE_PATH}.")
     ap.add_argument("--site", default="unknown", help="site tag for leave-one-site-out grouping")
     ap.add_argument("--no-resume", action="store_true", help="ignore any existing checkpoint")
     a = ap.parse_args()
 
+    clearance_path = a.clearance if a.clearance is not None else DEFAULT_CLEARANCE_PATH
     rep = scan_tree(a.src, a.out, resume=not a.no_resume, mode=a.mode,
-                    clearance_path=a.clearance, site=a.site)
+                    clearance_path=clearance_path, site=a.site)
     print(json.dumps(rep, indent=2, sort_keys=True))
     return 0
 

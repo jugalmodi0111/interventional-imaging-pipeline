@@ -17,10 +17,20 @@ Rule 4 is what rejects the contrast-filled vessel: a thin diagonal inside a ~10-
 component about as wide as it is tall, while a banner spans the full frame width.
 
 ``cv2``/``numpy`` are imported inside functions so this module stays torch-free AND cv2-free at
-import time. Runs standalone: ``python -m src.ingest.pixel_deid <dicom> [--mode {synthetic,real}]
-[--clearance PATH]``.
+import time. Runs standalone: ``python -m src.ingest.pixel_deid <dicom> --mode {synthetic,real}
+[--clearance-override-for-tests PATH]``. ``--mode`` is REQUIRED (audit P0.1 fix #1); there is no
+default.
 """
 import os
+from pathlib import Path
+
+#: Absolute, repo-root-anchored path to the B5/B9 clearance marker. Resolved from THIS file's own
+#: location, never from the process cwd -- audit P0.1 fix #2: the old CLI silently fell back to
+#: clearance.DEFAULT_CLEARANCE_PATH (a bare relative string) whenever --clearance was omitted, so
+#: a two-line YAML dropped anywhere a real-mode run happened to be launched from could open the
+#: gate. --clearance-override-for-tests is the only way to point a run at a different marker, and
+#: it exists for tests only.
+DEFAULT_CLEARANCE_PATH = Path(__file__).resolve().parents[2] / "configs" / "ingest_clearance.yaml"
 
 SCREEN_FRACTION = 0.15          # top/bottom fraction of the frame that is screened for text
 SATURATION_FRACTION = 0.90      # pixels at >=90% of full 8-bit scale count as "overlay bright"
@@ -113,7 +123,13 @@ def needs_review(ds, boxes):
 
 
 def main(argv=None):
-    """CLI: screen every frame of one DICOM and print the boxes that would be masked."""
+    """CLI: screen every frame of one DICOM and print the boxes that would be masked.
+
+    --mode is REQUIRED, no default (audit P0.1 fix #1). The clearance marker is always resolved
+    from DEFAULT_CLEARANCE_PATH (<repo-root>/configs/ingest_clearance.yaml) unless
+    --clearance-override-for-tests names a different marker -- that flag exists for tests only and
+    must never be used against a real drive (audit P0.1 fix #2).
+    """
     import argparse
     import json
 
@@ -122,13 +138,20 @@ def main(argv=None):
 
     from src.ingest.clearance import VALID_MODES, require_clearance
 
-    ap = argparse.ArgumentParser(description="Screen a DICOM's frames for burned-in overlay text.")
+    ap = argparse.ArgumentParser(
+        description="Screen a DICOM's frames for burned-in overlay text.",
+        allow_abbrev=False)          # a bare "--clearance ..." must NOT abbreviation-match
+                                     # --clearance-override-for-tests (audit P0.1 fix #2)
     ap.add_argument("dicom", help="path to a DICOM file")
-    ap.add_argument("--mode", default="synthetic", choices=list(VALID_MODES),
-                     help="ingest clearance mode (default: synthetic)")
-    ap.add_argument("--clearance", default=None, help="path to the signed clearance record")
+    ap.add_argument("--mode", required=True, choices=list(VALID_MODES),
+                     help="REQUIRED, no default -- ingest clearance mode")
+    ap.add_argument("--clearance-override-for-tests", dest="clearance", default=None,
+                     help="TEST-ONLY: override the clearance marker path. Production runs must "
+                          "never pass this -- the marker is always read from "
+                          f"{DEFAULT_CLEARANCE_PATH}.")
     args = ap.parse_args(argv)
-    require_clearance(args.mode, **({"clearance_path": args.clearance} if args.clearance else {}))
+    clearance_path = args.clearance if args.clearance is not None else DEFAULT_CLEARANCE_PATH
+    require_clearance(args.mode, clearance_path=clearance_path)
 
     ds = pydicom.dcmread(args.dicom)
     px = ds.pixel_array

@@ -3,12 +3,15 @@
 Dialygo B5: every test here runs on the SYNTHETIC DICOM fixture only. No real study is ever
 opened by the test suite.
 """
+import json
+
 import numpy as np
+import pytest
 
 from src.ingest.pixel_deid import (SCREEN_FRACTION, detect_text_regions, mask_regions,
                                    needs_review)
 
-from tests.fixtures.synthetic_dicom import make_xa_dataset
+from tests.fixtures.synthetic_dicom import make_xa_dataset, write_dataset
 
 ROWS = COLS = 64
 
@@ -131,3 +134,76 @@ def test_needs_review_false_only_when_tag_is_clean_and_nothing_was_found():
 
 def test_needs_review_true_when_there_is_no_header_to_check():
     assert needs_review(None, []) is True, "no header -> assume unscreened, defer to a human"
+
+
+# --- P0.1: module-level clearance-gate hardening on the CLI --------------------------------------
+
+
+def test_main_requires_mode(tmp_path):
+    """Fix #1: --mode has no default -- omitting it must fail argument parsing."""
+    from src.ingest.pixel_deid import main as pixel_deid_main
+
+    ds_path = write_dataset(make_xa_dataset(n_frames=2, rows=ROWS, cols=COLS), tmp_path / "case.dcm")
+
+    with pytest.raises(SystemExit) as ei:
+        pixel_deid_main([str(ds_path)])
+    assert ei.value.code == 2
+
+
+def test_main_smoke_screens_a_dicom(tmp_path, capsys):
+    from src.ingest.pixel_deid import main as pixel_deid_main
+
+    ds_path = write_dataset(make_xa_dataset(n_frames=2, rows=ROWS, cols=COLS, burned_in=True),
+                            tmp_path / "case.dcm")
+
+    rc = pixel_deid_main([str(ds_path), "--mode", "synthetic"])
+
+    assert rc == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["review_required"] is True
+
+
+def test_main_clearance_override_for_tests_flag_is_honoured(tmp_path):
+    """Fix #2: the renamed flag still works, so tests can point real-mode runs at a fixture."""
+    from src.ingest.pixel_deid import main as pixel_deid_main
+
+    ds_path = write_dataset(make_xa_dataset(n_frames=2, rows=ROWS, cols=COLS), tmp_path / "case.dcm")
+    marker = tmp_path / "clearance.yaml"
+    marker.write_text("data_agreement_executed: true\nip_agreement_executed: true\n")
+
+    rc = pixel_deid_main([str(ds_path), "--mode", "real",
+                          "--clearance-override-for-tests", str(marker)])
+
+    assert rc == 0
+
+
+def test_main_rejects_the_old_bare_clearance_flag(tmp_path):
+    """The old --clearance flag name must be REJECTED outright, not silently accepted as an
+    argparse abbreviation of --clearance-override-for-tests."""
+    from src.ingest.pixel_deid import main as pixel_deid_main
+
+    ds_path = write_dataset(make_xa_dataset(n_frames=2, rows=ROWS, cols=COLS), tmp_path / "case.dcm")
+    marker = tmp_path / "clearance.yaml"
+    marker.write_text("data_agreement_executed: true\nip_agreement_executed: true\n")
+
+    with pytest.raises(SystemExit) as ei:
+        pixel_deid_main([str(ds_path), "--mode", "real", "--clearance", str(marker)])
+    assert ei.value.code == 2
+
+
+def test_main_real_mode_ignores_a_cwd_relative_clearance_marker(tmp_path, monkeypatch):
+    """Fix #2: without the override flag, the marker must resolve from the repo root, never from
+    a marker that happens to sit at a cwd-relative 'configs/ingest_clearance.yaml'."""
+    from src.ingest.clearance import ClearanceError
+    from src.ingest.pixel_deid import main as pixel_deid_main
+
+    fake_cwd = tmp_path / "fake_cwd"
+    (fake_cwd / "configs").mkdir(parents=True)
+    (fake_cwd / "configs" / "ingest_clearance.yaml").write_text(
+        "data_agreement_executed: true\nip_agreement_executed: true\n")
+    ds_path = write_dataset(make_xa_dataset(n_frames=2, rows=ROWS, cols=COLS),
+                            tmp_path / "case.dcm")
+    monkeypatch.chdir(fake_cwd)
+
+    with pytest.raises(ClearanceError):
+        pixel_deid_main([str(ds_path), "--mode", "real"])
