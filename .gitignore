@@ -30,5 +30,9 @@ outputs/coronary_nb/
 # Dialygo ingest: scan/de-id working state, plus anything that could re-identify a patient
 .ingest/
 *.crosswalk.csv
+*crosswalk*.csv
+crosswalk.csv
 *.salt
 salt.bin
+_keys/
+data/interim/
