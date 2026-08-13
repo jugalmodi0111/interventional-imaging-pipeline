@@ -15,13 +15,33 @@ from src.data_prep.preprocess import clahe_unsharp
 #   Danilov    <site>_<patient>_<seq>_<frame>  (e.g. 14_002_5_0016)          -> <site>_<patient>
 #   CADICA     p<patient>_v<video>_<frame>     (e.g. p12_v3_00045)           -> p<patient>
 #   CathAction <clip>_img-<seg>-<frame>        (e.g. JFQ_j3383201_img-00000-0042) -> <clip>
+#   AVF        avf_<site>_<pid10>_s<NN>_<FFFFF> (e.g. avf_inu_3f9c21b04e_s01_00012)
+#                                                                            -> avf_<site>_<pid10>
 _PATIENT_RE = re.compile(r"^(\d+_\d+)_\d+_\d+$")
 _CADICA_RE = re.compile(r"^(p\d+)_v\d+_\d+")   # CADICA pXX_vYY_NNNNN -> patient pXX
 _CLIP_RE = re.compile(r"^(.+?)_img-\d+-\d+$")
+# Dialygo AVF frames (src/ingest/extract.stem_prefix + frame_stem). Anchored at both ends with the
+# pseudo-id pinned to exactly 10 hex chars: tight enough that a near-miss stem falls through to
+# itself rather than over-collapsing unrelated names into one giant fake 'patient'.
+_AVF_RE = re.compile(r"^(avf_[a-z0-9]+_[0-9a-f]{10})_s\d+_\d+$")
 
 
 def group_key(name):
-    """Split-group key: collapse a source sequence's frames to one key; else the name itself."""
+    """Split-group key: collapse a source sequence's frames to one key; else the name itself.
+
+    Dialygo B5 splits BY PATIENT, never by image -- split_of() hashes THIS value, so any stem that
+    falls through to ``return name`` gets one group per frame and scatters a patient's
+    near-identical frames across train and val (the F1 0.885 -> 0.214 failure, PROJECT_TRACKER
+    2026-07-12(a)).
+
+        Danilov    <site>_<patient>_<seq>_<frame>   14_002_5_0016                 -> 14_002
+        CADICA     p<patient>_v<video>_<frame>      p12_v3_00045                  -> p12
+        CathAction <clip>_img-<seg>-<frame>         JFQ_j3383201_img-00000-0042   -> JFQ_j3383201
+        AVF        avf_<site>_<pid10>_s<NN>_<FFFFF> avf_inu_3f9c21b04e_s01_00012  -> avf_inu_3f9c21b04e
+    """
+    m = _AVF_RE.match(name)
+    if m:
+        return m.group(1)
     m = _PATIENT_RE.match(name)
     if m:
         return m.group(1)
@@ -302,7 +322,8 @@ def _audit_group(stem):
     return group_key(stem)
 
 
-def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5, cathaction_stems=None):
+def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5, cathaction_stems=None,
+                         avf_stems=None):
     """Post-conversion honesty gate for a YOLO train/val split. Returns a report dict;
     RAISES AssertionError the moment the split could leak. Call it AFTER conversion and
     BEFORE training so a leaked run can never silently report an inflated metric.
@@ -320,6 +341,13 @@ def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5, cat
        detected *independently of the regex*: if more than ``max_ungrouped_frac`` of them are
        ungrouped (``group_key(stem) == stem``), the grouping is untrustworthy -> raise, because
        we cannot prove the split is honest.
+
+       ``avf_stems`` is the same guard for Dialygo AVF frames (``avf_<site>_<pid10>_s<NN>_<FFFFF>``,
+       see ``_AVF_RE``): this is the project's signature failure mode (PROJECT_TRACKER 2026-07-12(a),
+       F1 0.885 -> 0.214), and (1) alone cannot catch a *silent* regex no-op because a per-frame
+       split has every group unique by construction and (1) trivially passes. Pass the true set of
+       AVF image stems so a future change to ``_AVF_RE``/the stem grammar that stops collapsing them
+       is caught here rather than blessed as "honest".
     """
     train, val = _split_stems(out_dir, "train"), _split_stems(out_dir, "val")
     assert train and val, (
@@ -376,7 +404,28 @@ def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5, cat
             f"and WILL leak. Inspect the names and update group_key()/_CLIP_RE before trusting any "
             f"F1. Example ungrouped: {sorted(ungrouped)[:5]}")
 
+    # (2c) same silent-grouping-no-op guard for Dialygo AVF frames. group_key only collapses names
+    #      matching 'avf_<site>_<pid10>_s<NN>_<FFFFF>'; if the real files are named otherwise the
+    #      collapse silently does nothing and the split degrades to per-frame -- the exact mechanism
+    #      behind F1 0.885 -> 0.214 (PROJECT_TRACKER 2026-07-12(a)). Pass the true set of AVF image
+    #      stems to prove they were actually grouped by patient (independent of the regex).
+    avf_report = None
+    if avf_stems is not None:
+        aset = set(avf_stems)
+        a_in_split = (train | val) & aset
+        ungrouped = {s for s in a_in_split if group_key(s) == s}
+        frac = len(ungrouped) / max(1, len(a_in_split))
+        avf_report = {"avf_frames": len(a_in_split),
+                     "ungrouped": len(ungrouped), "ungrouped_frac": round(frac, 3),
+                     "patient_groups": len({group_key(s) for s in a_in_split})}
+        assert a_in_split and frac <= max_ungrouped_frac, (
+            f"UNGROUPED AVF: {len(ungrouped)}/{len(a_in_split)} "
+            f"({frac:.0%}) AVF frames were NOT collapsed by group_key — their filenames do not "
+            f"match the assumed 'avf_<site>_<pid10>_s<NN>_<FFFFF>' pattern, so the split is "
+            f"per-frame and WILL leak. Inspect the names and update group_key()/_AVF_RE before "
+            f"trusting any F1. Example ungrouped: {sorted(ungrouped)[:5]}")
+
     return {"train_imgs": len(train), "val_imgs": len(val),
             "train_groups": len(gtrain), "val_groups": len(gval),
             "val_frac_by_group": round(len(gval) / max(1, len(gtrain) + len(gval)), 3),
-            "danilov": danilov_report, "cathaction": cathaction_report}
+            "danilov": danilov_report, "cathaction": cathaction_report, "avf": avf_report}
