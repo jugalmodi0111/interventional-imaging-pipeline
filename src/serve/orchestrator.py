@@ -44,7 +44,7 @@ from src.serve.report import StudyReport, Finding
 from src.serve.registry import resolve
 from src.serve.diagnosis import det_to_findings, seg_to_finding, study_defer
 from src.serve.stenosis_triage import triage_decision
-from src.eval.audit import record
+from src.eval.audit import input_hash, record
 
 
 class DiagnosticOrchestrator:
@@ -52,12 +52,24 @@ class DiagnosticOrchestrator:
     uncertainty. `model_factory(entry) -> callable(frame_gray) -> dict` is injected so tests supply
     fakes; this class never constructs a real model itself."""
 
-    def __init__(self, router, registry, model_factory, cfg=None):
+    def __init__(self, router, registry, model_factory, cfg=None, bus=None):
         self.router = router
         self.registry = registry
         self.model_factory = model_factory
         self.cfg = cfg or {}
         self._models = {}
+        self.bus = bus                       # observe-only event mirror; None = silent (no-op)
+
+    def _publish(self, topic, **data):
+        """Mirror one pipeline step onto the event bus. Never load-bearing: with no bus attached
+        this is a no-op, and a crashing subscriber is the bus's problem (counted there), not ours."""
+        if self.bus is not None:
+            self.bus.publish(topic, **data)
+
+    def _emit_verdict(self, report):
+        self._publish("verdict.emitted", modality=report.modality, deferred=report.deferred,
+                      defer_reason=report.defer_reason, n_findings=len(report.findings))
+        return report
 
     def _model_for(self, entry):
         """Lazily build (and cache) the model callable for a modality via the injected factory."""
@@ -67,10 +79,11 @@ class DiagnosticOrchestrator:
 
     def _report(self, decision, findings, frames_analyzed, versions):
         deferred, reason = study_defer(decision, findings)
-        return StudyReport(modality=decision.modality, view=decision.view,
-                           quality_ok=decision.quality_ok, findings=findings,
-                           deferred=deferred, defer_reason=reason,
-                           frames_analyzed=frames_analyzed, model_versions=versions)
+        return self._emit_verdict(StudyReport(modality=decision.modality, view=decision.view,
+                                              quality_ok=decision.quality_ok, findings=findings,
+                                              deferred=deferred, defer_reason=reason,
+                                              frames_analyzed=frames_analyzed,
+                                              model_versions=versions))
 
     def _det_findings(self, entry, out):
         """Detector output -> [Finding], honoring BOTH abstention signals a det model can raise:
@@ -101,19 +114,24 @@ class DiagnosticOrchestrator:
         """Classify one frame's modality, run its task model (if any), and return a StudyReport.
         Never raises on router/model uncertainty -- it defers instead."""
         versions = {"router": getattr(self.router, "weights", "router")}
+        self._publish("frame.received", input_hash=input_hash(frame_gray))
         try:
             dec = self.router.classify(frame_gray)
         except RouterUnavailable:
+            self._publish("router.unavailable", router=versions["router"])
             # The router itself could not be loaded or run (weights not deployed, timm/torch
             # missing, corrupt state_dict). Without a modality decision NO task model may run, so
             # defer the whole study -- with a reason an operator can tell apart from both a genuine
             # analysis bug ("analysis-error" at the endpoint) and a missing task model
             # ("model-unavailable"). No audit entry: nothing genuine ran (mirrors the
             # model-unavailable path below).
-            return StudyReport(modality="unknown", view=None, quality_ok=False,
-                               findings=[], deferred=True, defer_reason="router-unavailable",
-                               frames_analyzed=1, model_versions=versions)
+            return self._emit_verdict(StudyReport(
+                modality="unknown", view=None, quality_ok=False,
+                findings=[], deferred=True, defer_reason="router-unavailable",
+                frames_analyzed=1, model_versions=versions))
 
+        self._publish("router.decided", modality=dec.modality, deferred=dec.deferred,
+                      reason=dec.reason, confidence=float(dec.confidence))
         if dec.deferred:
             # Router already distrusts this frame (unknown modality, thin margin, low quality) --
             # don't spend inference or an audit entry on a study that is deferring anyway.
@@ -133,9 +151,12 @@ class DiagnosticOrchestrator:
             # ran, so defer the whole study rather than let triage/seg post-processing misread an
             # empty/absent output as a confident negative. No audit entry either -- there is nothing
             # genuine to log (mirrors the router-deferred / unsupported-modality paths above).
-            return StudyReport(modality=dec.modality, view=dec.view, quality_ok=dec.quality_ok,
-                               findings=[], deferred=True, defer_reason="model-unavailable",
-                               frames_analyzed=1, model_versions=versions)
+            self._publish("model.unavailable", modality=dec.modality,
+                          model_path=entry.model_path)
+            return self._emit_verdict(StudyReport(
+                modality=dec.modality, view=dec.view, quality_ok=dec.quality_ok,
+                findings=[], deferred=True, defer_reason="model-unavailable",
+                frames_analyzed=1, model_versions=versions))
 
         if entry.task == "det":
             findings = self._det_findings(entry, out)
@@ -143,6 +164,9 @@ class DiagnosticOrchestrator:
             findings = [seg_to_finding(entry, out)]
 
         finding = findings[0]
+        self._publish("model.inferred", finding_label=entry.finding_label, task=entry.task,
+                      confidence=float(finding.confidence), deferred=finding.deferred,
+                      reason=finding.reason)
         record(entry.model_path, frame_gray,
               {"modality": dec.modality, "task": entry.task, "finding": entry.finding_label,
                "confidence": finding.confidence, "deferred": finding.deferred,
@@ -241,6 +265,7 @@ def build_orchestrator(cfg_path):
         runtime: {temperature}   # optional, passed through as cfg
     """
     import yaml
+    from src.serve.events import EventBus, JsonlSink
     from src.serve.router import ModalityRouter
     from src.serve.registry import load_registry
 
@@ -249,4 +274,14 @@ def build_orchestrator(cfg_path):
     rc = cfg["router"]
     router = ModalityRouter(rc["weights"], rc["labels"], rc.get("thresholds"))
     registry = load_registry(cfg_path)
-    return DiagnosticOrchestrator(router, registry, _model_factory, cfg=cfg.get("runtime", {}))
+
+    # Observe-only event mirror: everything the pipeline does is published here, persisted next to
+    # the audit trail (runs/events.jsonl) and replayable live via GET /events. What was registered
+    # is itself the first thing on the bus.
+    bus = EventBus()
+    bus.subscribe("*", JsonlSink("runs/events.jsonl"))
+    for entry in registry.values():
+        bus.publish("registry.loaded", modality=entry.modality, task=entry.task,
+                    model_path=entry.model_path, floor_ok=entry.floor_ok)
+    return DiagnosticOrchestrator(router, registry, _model_factory, cfg=cfg.get("runtime", {}),
+                                  bus=bus)

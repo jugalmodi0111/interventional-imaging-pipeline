@@ -96,6 +96,59 @@ if FastAPI is not None:
                            deferred=True, defer_reason=reason, frames_analyzed=0,
                            model_versions={}).to_dict()
 
+    @app.get("/events")
+    async def events(replay: int = 50, max_events: int = 0, timeout: float = 0.0):
+        """Live `text/event-stream` mirror of the orchestrator's event bus: replays the last
+        `replay` buffered events, then streams new ones as they happen. `max_events`/`timeout`
+        bound the stream (0 = unbounded) -- handy for curl and deterministic tests:
+
+            curl -N 'localhost:8000/events'                       # watch live
+            curl -N 'localhost:8000/events?max_events=20'         # first 20 then close
+
+        Observe-only by construction: this endpoint subscribes like any other observer and cannot
+        influence a verdict. Events carry hashes/ids/reasons, never pixels (see events.py)."""
+        import asyncio
+        import json as _json
+        import queue as _queue
+        import time as _time
+        from fastapi.responses import StreamingResponse
+
+        try:
+            orch = _orch if _orch is not None else _get_orch()
+            bus = getattr(orch, "bus", None)
+        except Exception:
+            bus = None
+        if bus is None:
+            raise HTTPException(status_code=503,
+                                detail="event bus unavailable (orchestrator failed to build)")
+
+        q = _queue.Queue()
+        unsubscribe = bus.subscribe("*", q.put)
+        replayed = bus.ring.snapshot()[-replay:] if replay > 0 else []
+
+        async def gen():
+            sent = 0
+            deadline = _time.monotonic() + timeout if timeout > 0 else None
+            try:
+                for e in replayed:
+                    yield f"data: {_json.dumps(e, default=str)}\n\n"
+                    sent += 1
+                    if max_events and sent >= max_events:
+                        return
+                while deadline is None or _time.monotonic() < deadline:
+                    try:
+                        e = await asyncio.to_thread(q.get, True, 0.25)
+                    except _queue.Empty:
+                        continue
+                    yield f"data: {_json.dumps(e, default=str)}\n\n"
+                    sent += 1
+                    if max_events and sent >= max_events:
+                        return
+            finally:
+                unsubscribe()
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
     @app.post("/analyze")
     async def analyze(file: UploadFile = File(...), kind: str = "image"):
         """POST a single still frame (`?kind=image`, the default) and get back a `StudyReport`
