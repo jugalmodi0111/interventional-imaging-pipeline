@@ -142,6 +142,12 @@ def scan_tree(roots, out_dir, *, resume=True, mode="synthetic",
         roots = [roots]
     roots = [str(r) for r in roots]
 
+    missing = [r for r in roots if not os.path.isdir(r)]
+    if missing:
+        raise ValueError(
+            "scan_tree: root(s) not found or not a directory: " + ", ".join(missing) +
+            " -- refusing to report a confident empty inventory for what may be a typo'd path.")
+
     os.makedirs(out_dir, exist_ok=True)
     files_path = os.path.join(out_dir, FILES_JSONL)
     state_path = os.path.join(out_dir, STATE_JSON)
@@ -155,8 +161,11 @@ def scan_tree(roots, out_dir, *, resume=True, mode="synthetic",
             try:
                 for row in manifest.read_jsonl(files_path):
                     already_recorded.add(row.get("path"))
-            except (OSError, json.JSONDecodeError):
-                # If files.jsonl is corrupted, proceed without dedup to fail gracefully
+            except (OSError, ValueError):
+                # If files.jsonl is corrupted, proceed without dedup to fail gracefully.
+                # ValueError (not just json.JSONDecodeError, a subclass) also covers a torn
+                # multi-byte UTF-8 tail surfacing as UnicodeDecodeError, in case read_jsonl's
+                # own errors="replace" guard is ever bypassed by a future caller.
                 pass
     else:
         done = set()
@@ -165,13 +174,32 @@ def scan_tree(roots, out_dir, *, resume=True, mode="synthetic",
             os.remove(files_path)
 
     def _checkpoint():
+        # Fsync files.jsonl BEFORE the atomic state write: the checkpoint is a promise that
+        # every row up to this point is durable, and write_json_atomic already fsyncs the state
+        # file itself. Fsyncing here, once per directory rather than once per append, is what
+        # makes that promise true without paying an fsync per file on a 200k-file drive.
+        if os.path.exists(files_path):
+            manifest.fsync_file(files_path)
         manifest.save_state(state_path, {"schema_version": manifest.SCHEMA_VERSION,
                                          "site": site, "roots": roots,
                                          "done_dirs": sorted(done)})
 
     n_new = 0
+
+    def _on_walk_error(err):
+        # os.walk's default onerror=None silently drops a directory it cannot list (mode 000 is
+        # routine on vendor NTFS/exFAT dumps): n_files would count only what was reachable and
+        # exit 0 with no error row. Record the failure as a row instead of losing it.
+        nonlocal n_new
+        path = os.path.abspath(getattr(err, "filename", None) or "")
+        row = {"path": path, "kind": "unreadable_dir", "error": f"{type(err).__name__}: {err}"}
+        if path not in already_recorded:
+            manifest.append_jsonl(files_path, row)
+            already_recorded.add(path)
+            n_new += 1
+
     for root in roots:
-        for dirpath, dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root, onerror=_on_walk_error):
             dirnames.sort()
             key = os.path.abspath(dirpath)
             if key in done:

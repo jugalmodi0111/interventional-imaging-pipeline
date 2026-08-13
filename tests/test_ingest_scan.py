@@ -226,6 +226,113 @@ def test_scan_records_unreadable_file_without_crashing(drive, tmp_path):
     assert rep["counts"]["dicom"] == 3      # the walk continued past the failure
 
 
+_CAN_DENY_PERMISSIONS = (
+    os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() != 0
+)
+
+
+@pytest.mark.skipif(not _CAN_DENY_PERMISSIONS,
+                    reason="chmod 000 does not restrict access on Windows or as root")
+def test_scan_records_unreadable_directory_without_crashing(tmp_path):
+    """Mode-000 subdirectory (routine on vendor NTFS/exFAT dumps) must not vanish silently.
+
+    Before this fix, os.walk's default onerror=None swallowed the PermissionError: n_files
+    counted only what was reachable, the scan exited 0, and nothing in files.jsonl or the
+    summary hinted that a whole directory had been skipped.
+    """
+    from src.ingest.manifest import read_jsonl
+
+    root = tmp_path / "DRIVE"
+    locked = root / "LOCKED_DIR"
+    locked.mkdir(parents=True)
+    (locked / "hidden.dcm").write_bytes(b"\x00" * 200)   # never seen -- dir is unreadable
+    (root / "visible.txt").write_text("ok\n")
+    os.chmod(str(locked), 0o000)
+    try:
+        out = tmp_path / ".ingest"
+        rep = scan_tree([str(root)], str(out))          # must not raise
+        rows = read_jsonl(str(out / "files.jsonl"))
+        bad = [r for r in rows if r["kind"] == "unreadable_dir"]
+        assert len(bad) == 1
+        assert bad[0]["path"] == os.path.abspath(str(locked))
+        assert bad[0]["error"]
+        assert rep["counts"]["unreadable_dir"] == 1
+        assert rep["counts"]["other"] == 1                # visible.txt still recorded
+    finally:
+        os.chmod(str(locked), 0o755)                     # let pytest clean up tmp_path
+
+
+def test_scan_tree_raises_on_missing_root(tmp_path):
+    """A typo'd drive path must refuse loudly, not report a confident empty inventory."""
+    out = tmp_path / ".ingest"
+    bad = tmp_path / "TYPO_DRIVE"
+    with pytest.raises(ValueError) as ei:
+        scan_tree([str(bad)], str(out))
+    assert str(bad) in str(ei.value)
+    assert not out.exists()                              # refuses before any output is written
+
+
+def test_scan_tree_raises_naming_every_missing_root(drive, tmp_path):
+    """Multiple bad roots: every one must be named, not just the first."""
+    out = tmp_path / ".ingest"
+    bad1 = tmp_path / "NOPE_ONE"
+    bad2 = tmp_path / "NOPE_TWO"
+    with pytest.raises(ValueError) as ei:
+        scan_tree([str(drive), str(bad1), str(bad2)], str(out))
+    msg = str(ei.value)
+    assert str(bad1) in msg
+    assert str(bad2) in msg
+    assert not out.exists()
+
+
+def test_scan_fsyncs_files_jsonl_before_checkpoint_not_on_every_append(tmp_path, monkeypatch):
+    """Durability fix: files.jsonl is fsynced once per checkpoint, not once per append.
+
+    Before this fix, only the state checkpoint was fsynced (write_json_atomic); files.jsonl
+    relied on the OS to eventually flush its buffers. After a power loss, scan_state.json could
+    vouch for rows that were never actually written to disk, and resume would then skip that
+    directory forever, believing it complete.
+    """
+    from src.ingest import manifest as manifest_mod
+
+    root = tmp_path / "DRIVE"
+    root.mkdir()
+    for i in range(20):
+        (root / f"f{i:03d}.txt").write_text("x")
+
+    calls = []
+    orig = manifest_mod.fsync_file
+
+    def spy(path):
+        calls.append(path)
+        return orig(path)
+
+    monkeypatch.setattr(manifest_mod, "fsync_file", spy)
+    out = tmp_path / ".ingest"
+    scan_tree([str(root)], str(out))
+
+    assert calls                                          # fsync_file was actually used
+    assert len(calls) < 20                                # NOT once per append
+    assert all(c == str(out / "files.jsonl") for c in calls)
+
+
+def test_scan_survives_torn_multibyte_tail_in_files_jsonl_on_resume(drive, tmp_path):
+    """A torn append landing mid multi-byte UTF-8 character (a non-ASCII patient name is
+    near-certain on an institutional drive) must not crash resume's dedup read or the final
+    summarize() read -- both call manifest.read_jsonl on files.jsonl.
+    """
+    out = tmp_path / ".ingest"
+    scan_tree([str(drive)], str(out))
+    files_path = out / "files.jsonl"
+    with open(files_path, "ab") as f:
+        # First byte of a 2-byte UTF-8 sequence, no continuation byte -- exactly what a drive
+        # yanked mid-write leaves behind.
+        f.write(b'{"path": "/x", "name": "R\xc3')
+
+    rep = scan_tree([str(drive)], str(out), resume=True)   # must not raise
+    assert rep["n_files"] == 7                              # torn tail dropped, nothing new
+
+
 def test_scan_writes_state_and_provenance(drive, tmp_path):
     import json
 

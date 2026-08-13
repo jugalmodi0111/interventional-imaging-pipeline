@@ -148,31 +148,56 @@ def build_index(files_rows, out_dir, *, mode="synthetic",
                 clearance_path="configs/ingest_clearance.yaml", site="unknown"):
     """Index every kind="dicom" row, dedupe by SOP, and write the Phase 2 artifacts.
 
-    Writes <out_dir>/dicom_index.jsonl (one JSON object per unique SOP instance) and
+    Writes <out_dir>/dicom_index.jsonl (one JSON object per unique SOP instance),
+    <out_dir>/index_errors.jsonl (one row per row dropped from the index -- see below), and
     <out_dir>/index_summary.json (counts + provenance). Returns the counts dict with keys
-    n_files_seen, n_dicom, n_unique_sop, n_patients, n_studies, n_series.
+    n_files_seen, n_dicom_rows_seen, n_dicom, n_unparsed, n_unique_sop, n_patients, n_studies,
+    n_series.
+
+    Three different failures used to `continue` past a dropped file identically and invisibly:
+    non-DICOM, a missing SOPInstanceUID, and genuinely corrupt data all make read_header return
+    None, and a lost SOP-dedupe race dropped a real record with no record of it at all. If every
+    damaged instance of one patient's study happens to be dropped this way, that patient silently
+    vanishes from the cohort with zero signal -- and Task 6's PHI audit, which reads this index,
+    never sees it happen. index_errors.jsonl makes every drop visible:
+      * reason="unparseable_or_missing_sop" -- read_header(path) returned None. Non-DICOM, a
+        missing SOPInstanceUID, and an outright parse failure are indistinguishable from outside
+        read_header, so they share one reason rather than a guessed diagnosis.
+      * reason="sop_duplicate" -- a real, parseable instance that lost the SOP dedupe race;
+        "kept_copy" names the path of the duplicate that was kept, which is the only signal left
+        that a losing re-burn might be truncated relative to the copy that won.
 
     The clearance gate runs first, before any file is opened, so `mode="real"` cannot read a
     single byte of patient data until the institutional agreement is executed (Dialygo B5).
 
-    Re-running overwrites rather than appends, so the index is idempotent: two runs of the same
-    drive produce byte-identical output.
+    Re-running overwrites rather than appends, so the index and its error log are idempotent:
+    two runs of the same drive produce byte-identical output.
     """
     require_clearance(mode, clearance_path)
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     index_path = out / "dicom_index.jsonl"
+    errors_path = out / "index_errors.jsonl"
     if index_path.exists():
         index_path.unlink()
+    if errors_path.exists():
+        errors_path.unlink()
 
     records = []
+    error_rows = []
+    n_dicom_rows_seen = 0
+    n_unparsed = 0
     for row in files_rows:
         row = row or {}
         if row.get("kind") != "dicom":
             continue
-        rec = read_header(row.get("path"))
-        if rec is None:                      # Phase 1 guessed wrong; not a DICOM instance
+        n_dicom_rows_seen += 1
+        path = row.get("path")
+        rec = read_header(path)
+        if rec is None:                      # non-DICOM, missing SOP, or a parse failure
+            n_unparsed += 1
+            error_rows.append({"path": path, "reason": "unparseable_or_missing_sop"})
             continue
         rec["head_key"] = row.get("head_key")
         rec["size"] = row.get("size")
@@ -182,10 +207,24 @@ def build_index(files_rows, out_dir, *, mode="synthetic",
     for rec in unique:
         append_jsonl(str(index_path), rec)
 
+    # Every record in `unique` is the lexicographically-first path for its SOP (dedupe_by_sop's
+    # own rule); anything in `records` that isn't that winning path lost the dedupe race.
+    kept_path_by_sop = {str(rec.get("SOPInstanceUID")): str(rec.get("path", "")) for rec in unique}
+    for rec in sorted(records, key=lambda r: str(r.get("path", ""))):
+        kept = kept_path_by_sop.get(str(rec.get("SOPInstanceUID")))
+        if kept is not None and str(rec.get("path", "")) != kept:
+            error_rows.append({"path": rec.get("path"), "reason": "sop_duplicate",
+                               "kept_copy": kept})
+
+    for err in error_rows:
+        append_jsonl(str(errors_path), err)
+
     hier = build_hierarchy(unique)
     counts = {
         "n_files_seen": len(files_rows),
+        "n_dicom_rows_seen": n_dicom_rows_seen,
         "n_dicom": len(records),
+        "n_unparsed": n_unparsed,
         "n_unique_sop": len(unique),
         "n_patients": len(hier),
         "n_studies": sum(len(studies) for studies in hier.values()),

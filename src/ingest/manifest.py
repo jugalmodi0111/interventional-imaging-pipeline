@@ -17,6 +17,11 @@ Write durability is split on purpose:
     directories that were never scanned, producing a manifest that looks complete. So state goes
     through write_json_atomic (temp file in the same dir -> fsync -> os.replace), and a reader sees
     either the whole old state or the whole new one.
+  * append_jsonl itself never fsyncs (that would mean one fsync per file, which is too slow for a
+    200k-file drive) -- but the caller MUST fsync files.jsonl via fsync_file before trusting a
+    checkpoint that claims those rows are safe. Otherwise the state checkpoint can vouch for rows
+    that a power loss only ever put in the OS page cache, and resume then skips that directory
+    forever believing it complete.
 
 Module imports are stdlib-only: no torch, no cv2, no pydicom.
 
@@ -68,11 +73,16 @@ def read_jsonl(path):
     Blank lines are skipped. Lines that do not parse (a torn tail from an interrupted append) or
     that parse to something other than an object are skipped rather than raising: one dropped row
     means one re-scanned file, whereas raising loses the entire manifest.
+
+    Opened with errors="replace": a torn append can land mid multi-byte UTF-8 character (routine
+    on an institutional drive full of non-ASCII patient/site names), which raises
+    UnicodeDecodeError under strict decoding. That is exactly the same "one dropped row" failure
+    as a torn JSON tail and is handled the same way -- degrade, don't raise.
     """
     if not os.path.exists(path):
         return []
     rows = []
-    with open(path) as f:
+    with open(path, errors="replace") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -84,6 +94,22 @@ def read_jsonl(path):
             if isinstance(obj, dict):
                 rows.append(obj)
     return rows
+
+
+def fsync_file(path):
+    """Force `path`'s already-written content to durable storage without rewriting it.
+
+    Durability was inverted: write_json_atomic fsyncs the resume checkpoint, but append_jsonl
+    never fsyncs, so after a power loss the checkpoint can vouch for files.jsonl rows that were
+    only ever in the OS page cache and never reached disk -- resume then trusts the checkpoint
+    and skips that directory forever. Opening in append mode ('a') and calling os.fsync on the
+    resulting descriptor flushes ALL of that inode's outstanding dirty pages, including ones
+    written by earlier, already-closed append_jsonl calls, without touching a single byte of
+    content. Call this once before each checkpoint, not once per append -- fsync is expensive.
+    """
+    with open(path, "a") as f:
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def write_json_atomic(path, obj):

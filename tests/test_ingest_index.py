@@ -185,6 +185,12 @@ def handover(tmp_path):
     return rows, dup
 
 
+def _read_jsonl_rows(path):
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
 def test_build_index_counts_and_artifacts(tmp_path, handover):
     rows, dup = handover
     out = tmp_path / "index_out"
@@ -192,9 +198,11 @@ def test_build_index_counts_and_artifacts(tmp_path, handover):
     counts = build_index(rows, out, mode="synthetic", site="inu")
 
     assert counts == {
-        "n_files_seen": 7,       # every row handed to us, including the pdf
-        "n_dicom": 5,            # headers that actually parsed (the .TXT did not)
-        "n_unique_sop": 4,       # the re-burn collapsed away
+        "n_files_seen": 7,           # every row handed to us, including the pdf
+        "n_dicom_rows_seen": 6,      # rows Phase 1 tagged kind="dicom" (5 real + the .TXT)
+        "n_dicom": 5,                # headers that actually parsed (the .TXT did not)
+        "n_unparsed": 1,             # the .TXT: read_header returned None
+        "n_unique_sop": 4,           # the re-burn collapsed away
         "n_patients": 2,
         "n_studies": 2,
         "n_series": 3,
@@ -216,6 +224,16 @@ def test_build_index_counts_and_artifacts(tmp_path, handover):
     assert summary["mode"] == "synthetic"
     assert summary["provenance"]["tool"] == "src.ingest.index_dicom"
 
+    # Every file dropped from the index now leaves a visible trace instead of a silent `continue`.
+    errors = _read_jsonl_rows(out / "index_errors.jsonl")
+    assert len(errors) == 2
+    bogus_path = rows[5]["path"]                     # PATLIST.TXT, tagged dicom by Phase 1
+    p1_a1_path = rows[0]["path"]                      # the a_pacs copy that lost the dedupe race
+    assert {"path": bogus_path, "reason": "unparseable_or_missing_sop"} in errors
+    dup_row = next(e for e in errors if e["reason"] == "sop_duplicate")
+    assert dup_row["path"] == p1_a1_path
+    assert dup_row["kept_copy"] == str(dup)
+
 
 def test_build_index_is_idempotent(tmp_path, handover):
     rows, _ = handover
@@ -223,10 +241,50 @@ def test_build_index_is_idempotent(tmp_path, handover):
 
     first = build_index(rows, out, mode="synthetic", site="inu")
     text_first = (out / "dicom_index.jsonl").read_text()
+    errors_first = (out / "index_errors.jsonl").read_text()
     second = build_index(rows, out, mode="synthetic", site="inu")
 
     assert first == second
     assert (out / "dicom_index.jsonl").read_text() == text_first    # no append-on-rerun
+    assert (out / "index_errors.jsonl").read_text() == errors_first  # error log truncates too
+
+
+def test_build_index_writes_error_row_for_corrupt_file(tmp_path):
+    """A genuinely corrupt file (not just non-DICOM) must also leave a visible trace.
+
+    read_header cannot distinguish non-DICOM, missing-SOPInstanceUID and outright-corrupt --
+    all three return None -- so all three share one reason string.
+    """
+    junk = tmp_path / "corrupt.dcm"
+    junk.write_bytes(b"\x00\x01\x02\x03" * 64)          # not empty, not a DICOM instance either
+    out = tmp_path / "index_out"
+    rows = [_row(junk)]
+
+    counts = build_index(rows, out, mode="synthetic", site="inu")
+
+    assert counts["n_dicom_rows_seen"] == 1
+    assert counts["n_unparsed"] == 1
+    assert counts["n_dicom"] == 0
+    errors = _read_jsonl_rows(out / "index_errors.jsonl")
+    assert errors == [{"path": str(junk), "reason": "unparseable_or_missing_sop"}]
+
+
+def test_build_index_writes_sop_duplicate_row_with_kept_copy(tmp_path, handover):
+    """The losing copy of a SOP dedupe race must be named, along with what beat it.
+
+    Losing dedupe silently used to discard the loser's size/head_key with no trace at all --
+    the only signal that a re-burn might be truncated relative to the copy that was kept.
+    """
+    rows, dup = handover
+    out = tmp_path / "index_out"
+
+    build_index(rows, out, mode="synthetic", site="inu")
+
+    errors = _read_jsonl_rows(out / "index_errors.jsonl")
+    dup_rows = [e for e in errors if e["reason"] == "sop_duplicate"]
+    assert len(dup_rows) == 1
+    assert dup_rows[0]["path"] == rows[0]["path"]        # the a_pacs copy of SOP-A1
+    assert dup_rows[0]["kept_copy"] == str(dup)          # the 0_burn copy won lexicographically
 
 
 def test_build_index_refuses_real_mode_before_the_agreement(tmp_path, handover):

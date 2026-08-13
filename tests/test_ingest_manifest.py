@@ -85,6 +85,35 @@ def test_read_jsonl_skips_torn_tail_line(tmp_path):
     assert manifest.read_jsonl(str(p)) == [{"a": 1}, {"a": 2}]
 
 
+def test_read_jsonl_survives_torn_multibyte_utf8_tail(tmp_path):
+    """A torn append that lands mid multi-byte UTF-8 character must not raise.
+
+    Institutional drives carry non-ASCII patient/site names constantly; a drive yanked
+    mid-append can leave a lone lead byte of a multi-byte sequence with no continuation byte,
+    which raises UnicodeDecodeError under strict decoding -- an exception neither scan.py call
+    site was built to catch (only json.JSONDecodeError was). Open with errors="replace" so a
+    torn tail degrades the same way a torn JSON tail already does: dropped, not fatal.
+    """
+    p = tmp_path / "f.jsonl"
+    good = json.dumps({"a": 1}).encode("utf-8") + b"\n"
+    torn = b'{"name": "R\xc3'          # first byte of a 2-byte UTF-8 sequence, no continuation
+    p.write_bytes(good + torn)
+    assert manifest.read_jsonl(str(p)) == [{"a": 1}]
+
+
+def test_fsync_file_flushes_without_truncating(tmp_path, monkeypatch):
+    """fsync_file must force durability without clobbering what was already written."""
+    p = tmp_path / "f.jsonl"
+    p.write_text('{"a": 1}\n')
+
+    calls = []
+    monkeypatch.setattr(os, "fsync", lambda fd: calls.append(fd))
+    manifest.fsync_file(str(p))
+
+    assert calls                                  # os.fsync was actually invoked
+    assert p.read_text() == '{"a": 1}\n'          # append-mode open must not truncate content
+
+
 def test_write_json_atomic_leaves_no_temp_files(tmp_path):
     p = tmp_path / "out" / "state.json"
     manifest.write_json_atomic(str(p), {"done_dirs": ["/a"]})
