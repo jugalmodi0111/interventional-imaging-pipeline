@@ -88,7 +88,7 @@ Built 2026-08-09 → 2026-08-13 across 16 planned tasks. **All modules import to
 ### 2.3 Other implemented modules
 
 - `src/data_prep/` (1,626 LOC): `io_utils.py` (431 — grouping, splits, `audit_split_leakage`), `cathaction_to_yolo` (210), `cadica_to_yolo` (203), `autolabel_gdino` (148), `danilov_to_yolo` (140), `harmonize` (108), `balance` (94), `verify_sequence` (61), `preprocess` (50), `dca1_to_nnunet` (48), `arcade_to_coco` (31)
-- `src/eval/` (553 LOC): `calibration.py` (167 — ECE, Brier, reliability, temperature scaling, AUROC, OOD), `annotation_qa` (148), `metrics` (77 — Dice/clDice/CLGeoDice/HD95), `val_by_source` (56), `audit` (25)
+- `src/eval/` (738 LOC): `calibration.py` (167 — ECE, Brier, reliability, temperature scaling, AUROC, OOD), `annotation_qa` (148), `temporal_vote` (185 — **restored 2026-08-16, offline cine scoring only**), `metrics` (77 — Dice/clDice/CLGeoDice/HD95), `val_by_source` (56), `audit` (25)
 - `src/export/` (332 LOC): `quantize_int8.py` (**94 — rewritten to real static PTQ 2026-08-13**, was a 10-line dynamic stub), `yolo_to_coreml` (89), `coreml_validate` (83), `to_coreml` (52), `to_onnx` (14)
 - `src/train/` (575 LOC): `train_detector.py` (334), `train_seg.py` (233), `train_audio.py` (**8 — stub**)
 - `src/models/` (275 LOC): `distill` (108), `clgeodice` (59), `grounded_sam` (62), `seg_student` (46)
@@ -218,6 +218,7 @@ Dice **0.915** (best mid-run 0.927), clDice **0.956** (best 0.980) ≥ 0.75 floo
 Why nothing caught it: `audit_split_leakage()` carried `danilov_stems` / `cathaction_stems` / `avf_stems` regex-no-op tripwires but **no `cadica_stems`** — the same bug class as audit P0.2. Group-overlap alone cannot catch a silent no-op: a per-frame split has every group unique by construction and passes trivially. **Closed 2026-08-16** (§10).
 
 - [x] `cadica_stems=` tripwire + `cadica_to_yolo.main` self-audit + notebook wiring — **done 2026-08-16**
+- [x] **GPU notebook made runnable again 2026-08-16.** `kaggle_stenosis_plug_and_play.ipynb` §5b P1.1b imported `src.serve.temporal_vote`, which was **deleted on 2026-08-13** with the serve video path — the notebook would have crashed on Kaggle. Restored as **`src/eval/temporal_vote.py`** (+ its 15 tests) rather than back under `src/serve/`: Model One serves a single still frame and nothing in the request path may aggregate over a clip, but scoring a detector over raw cine *offline* is how the per-video sensitivity number behind the gate-reframe proposal is computed. Putting it under `src/eval/` makes that boundary structural. Added a `SKIP_TRAIN` mode so P1.0 runs on the existing baseline in ~15 min instead of a ~3 h retrain.
 - [ ] **Split-fraction fix:** independent per-patient hashing cannot hit the target 15–20% val with 42 groups. Replace with a deterministic per-patient **quota** split (sort patients by hash, admit until the val frame count reaches the target)
 - [ ] **P1.0 per-source val table** (GPU, ~1 hr) — the gate on every later lever; code landed 2026-07-17, never run
 - [ ] Re-run conversion + retrain on the corrected split before any Phase-2 lever is judged
