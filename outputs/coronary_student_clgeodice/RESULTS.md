@@ -32,10 +32,33 @@ clDice drop +0.0023   gate (<= 0.03)  ->  PASS
 
 **6-bit palettization does not break thin vessels** — clDice drop 0.0023, Dice drop 0.0018, both far under the 0.03 gate. The CoreML student is edge-trustworthy on the connectivity axis (`STAGE_ACCURACY_RESEARCH.md` F6's open question, now answered for *this* model + compression). Env note: use the **pyenv 3.12.9** interpreter (`~/.pyenv/versions/3.12.9/bin/python3`) — it has torch; the Homebrew `python3` (3.14) does not.
 
+## ONNX static-PTQ INT8 clDice gate — DONE 2026-08-16, **PASSED** ✅
+
+The 2026-08-13 static-PTQ landing measured **Dice only**. Dice can stay flat while quantization
+thins or severs vessel centerlines, and `configs/edge_export.yaml` declares the HARD gate on
+**clDice** (`gate.cldice_drop_max: 0.03`), so the gate was not actually evidenced until now.
+Re-run on the same 50 held-out coronary val pairs, onnxruntime CPU EP, threshold 0.5, with the
+identical preprocessing `quantize_int8.PngCalibrationReader` feeds (grayscale → resize 512 →
+float32/255 → `[1,1,H,W]`):
+
+```
+n=50
+fp32         Dice 0.9156  clDice 0.9783   (1.93 MB: student.onnx + student.onnx.data)
+int8-static  Dice 0.9156  clDice 0.9786   (0.52 MB)
+Dice drop    -0.0000
+clDice drop  -0.0003   gate (<= 0.03)  ->  PASS
+mask agreement 0.9996
+```
+
+**Static PTQ INT8 does not break thin vessels either.** The clDice difference is negative (INT8
+marginally higher) — that is noise at n=50, not a gain; the honest read is "no measurable
+connectivity cost" at a 73% size reduction. Both edge paths (CoreML 6-bit palettize, ONNX static
+INT8) are now clDice-gated on evidence rather than on Dice-level inference.
+
 ## Still pending before full deploy sign-off
 1. **clDice vs teacher within ~3%** — need the nnU-Net teacher's own clDice to confirm the teacher-relative bound formally. Raw student clDice 0.956–0.978 is high; compute the teacher number and the gap.
 2. **On-device benchmark** on Apple silicon: `make bench-coreml MODEL=outputs/coronary_student_clgeodice/student.mlpackage` (latency/fps on the ANE, not the Kaggle-CPU 8.7 fps).
-3. **`student.int8.onnx` gate (non-Apple targets only)** — the CoreML edge path uses palettize (gated above). If the ONNX INT8 build ships to a Jetson/Intel target, re-run the clDice check against that artifact separately (`--method linear` equivalent).
+3. ~~`student.int8.onnx` gate (non-Apple targets only)~~ — **closed 2026-08-16** by the static-PTQ clDice gate above. Note it gates `student.int8.static.onnx`; the older dynamic `student.int8.onnx` is an unquantified fallback and should not ship.
 
 ## Provenance note
 Retrieved via direct Kaggle output-file URLs (4 files, ~5 MB) — the kernel had saved its entire `/kaggle/working` (18,514 files, ~15k regenerable nnUNet cache PNGs), so a full `kaggle kernels output` pull was infeasible. **Fix for future coronary runs:** point nnU-Net caches at `/kaggle/tmp` (not `/kaggle/working`) so committed output stays small, mirroring the stenosis notebook.

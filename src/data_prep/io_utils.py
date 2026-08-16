@@ -323,7 +323,7 @@ def _audit_group(stem):
 
 
 def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5, cathaction_stems=None,
-                         avf_stems=None):
+                         avf_stems=None, cadica_stems=None):
     """Post-conversion honesty gate for a YOLO train/val split. Returns a report dict;
     RAISES AssertionError the moment the split could leak. Call it AFTER conversion and
     BEFORE training so a leaked run can never silently report an inflated metric.
@@ -425,7 +425,33 @@ def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5, cat
             f"per-frame and WILL leak. Inspect the names and update group_key()/_AVF_RE before "
             f"trusting any F1. Example ungrouped: {sorted(ungrouped)[:5]}")
 
+    # (2d) same silent-grouping-no-op guard for CADICA keyframes. This one is not hypothetical: the
+    #      2026-07-16 run printed "LEAKAGE CHECK PASSED ... 5560 groups" over 5816 images, of which
+    #      3996 groups were 3996 CADICA frames -- group_key had no _CADICA_RE yet (it landed the
+    #      next day, 0fb7390), so the auditor blessed a CADICA grouping it never checked. The
+    #      converter split by patient regardless (cadica_to_yolo calls split_of(patient)), so the
+    #      images did not actually leak -- but the certificate, the group counts and the reported
+    #      val fraction were all meaningless. Pass the true set of CADICA output stems so the
+    #      collapse is proven independently of the regex.
+    cadica_report = None
+    if cadica_stems is not None:
+        kset = set(cadica_stems)
+        k_in_split = (train | val) & kset
+        ungrouped = {s for s in k_in_split if group_key(s) == s}
+        frac = len(ungrouped) / max(1, len(k_in_split))
+        cadica_report = {"cadica_frames": len(k_in_split),
+                         "ungrouped": len(ungrouped), "ungrouped_frac": round(frac, 3),
+                         "patient_groups": len({group_key(s) for s in k_in_split})}
+        assert k_in_split and frac <= max_ungrouped_frac, (
+            f"UNGROUPED CADICA: {len(ungrouped)}/{len(k_in_split)} "
+            f"({frac:.0%}) CADICA frames were NOT collapsed by group_key — their filenames do not "
+            f"match the assumed 'p<patient>_v<video>_<frame>' pattern, so the split is per-frame "
+            f"and the group/val-fraction accounting is wrong. Inspect the names and update "
+            f"group_key()/_CADICA_RE before trusting any F1. Example ungrouped: "
+            f"{sorted(ungrouped)[:5]}")
+
     return {"train_imgs": len(train), "val_imgs": len(val),
             "train_groups": len(gtrain), "val_groups": len(gval),
             "val_frac_by_group": round(len(gval) / max(1, len(gtrain) + len(gval)), 3),
-            "danilov": danilov_report, "cathaction": cathaction_report, "avf": avf_report}
+            "danilov": danilov_report, "cathaction": cathaction_report, "avf": avf_report,
+            "cadica": cadica_report}

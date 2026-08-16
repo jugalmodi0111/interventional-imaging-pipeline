@@ -1,8 +1,8 @@
 # Project Tracker - Interventional Imaging Pipeline
 
 **Purpose:** single source of truth for *what is done* and *what is next*. Check boxes as you go.
-**Last updated:** 2026-08-15 · **Owner:** jugalmodi0111 · **HEAD at update:** `e41108a` (main, clean tree)
-**Verified suite at update:** **621 passing** across 42 test files (`python -m pytest tests/ -q`)
+**Last updated:** 2026-08-16 · **Owner:** jugalmodi0111 · **HEAD at update:** `f616f19` (main, + uncommitted 2026-08-16 work)
+**Verified suite at update:** **626 passing** across 43 test files (`python -m pytest tests/ -q`)
 **Companion docs:** [`Model_Pipeline_Playbook.md`](Model_Pipeline_Playbook.md) (rationale) · [`DATASETS.md`](DATASETS.md) · [`INGEST_HDD_RUNBOOK.md`](INGEST_HDD_RUNBOOK.md) · [`Dialygo_Orientation_and_Requirements.md`](Dialygo_Orientation_and_Requirements.md) (B1–B9, binding) · [`INTENDED_USE.md`](INTENDED_USE.md)
 
 ---
@@ -28,7 +28,7 @@
 | E | **Coronary segmentation** | `x` **gate PASSED** | `outputs/coronary_student_clgeodice/` | Dice **0.915** / clDice **0.956** ≥ 0.75 floor. CoreML 6-bit gate passed. |
 | F | **Stenosis detection** | `!` **BELOW floor** | `experiments/…cadica+danilov…/run/weights/best.pt` | F1 **0.291** / recall 0.271 vs floor F1 0.57 / recall 0.60. |
 | G | **Catheter tracking** | `~` **trained, never gated** | `outputs/best-catheter.pt` | IoU / fps / ID-switch **never measured**. Tracking code was **deleted** with the video path (see §4). |
-| H | **Edge export / INT8** | `x` **static PTQ landed** | `outputs/coronary_student_clgeodice/student.int8.static.onnx` | INT8 Dice **0.9157** vs fp32 0.9156 (zero drop), 1.94 MB → 0.52 MB. |
+| H | **Edge export / INT8** | `x` **gate PASSED** | `outputs/coronary_student_clgeodice/student.int8.static.onnx` | **clDice 0.9786 vs fp32 0.9783 (drop −0.0003 ≤ 0.03 gate)**, Dice 0.9156 both, 1.93 MB → 0.52 MB, mask agreement 0.9996. Re-checked 2026-08-16. |
 | I | **Model One (AVF classifier)** | `[ ]` **not started — plan written** | none | Plan: [`plans/2026-08-13-model-one-classifier-scaffold.md`](superpowers/plans/2026-08-13-model-one-classifier-scaffold.md). Awaiting approval. |
 | J | **AVF data acquisition** | `!` **PENDING — no public data exists** | none | See §7. Confirmed: zero public AVF fistulography datasets worldwide. |
 | K | **Cerebral DSA / TAVR / AVF audio / AVF tabular** | `[ ]` not started | none | Stubs or orphan configs only. |
@@ -186,14 +186,24 @@ Observe-only pub/sub mirroring the pipeline. **Never carries control flow**; a c
 Dice **0.915** (best mid-run 0.927), clDice **0.956** (best 0.980) ≥ 0.75 floor — CLGeoDice run 2026-07-16, `outputs/coronary_student_clgeodice/`.
 
 - [ ] Teacher-clDice comparison (`qualifies()` gates Dice only; playbook wants clDice within ~3% of teacher)
-- [ ] Post-INT8 clDice re-check on the new **static** INT8 artifact (Dice-level evidence suggests it passes easily)
+- [x] Post-INT8 clDice re-check on the **static** INT8 artifact — **done 2026-08-16, PASSED.** clDice 0.9786 (INT8) vs 0.9783 (fp32), drop **−0.0003** vs the 0.03 gate; Dice 0.9156 both; mask agreement 0.9996; 1.93 MB → 0.52 MB. The negative drop is n=50 noise, not a gain — the honest claim is "no measurable connectivity cost". Gates `student.int8.static.onnx` only; the older dynamic `student.int8.onnx` remains unquantified and must not ship.
 - [ ] SSL pretraining on XCAD unlabeled
 
 ### 4.5 Stenosis detection `!` — below floor, parked by design
 
 **F1 0.291 / recall 0.271 / mAP50 0.209** vs floor F1 0.57 / recall 0.60 (`arcade+cadica+danilov_yolo11s_768_e150`, honest patient-grouped split, 2026-07-16). Progression: 0.246 (ARCADE only) → 0.885 (**leakage-inflated, discarded**) → 0.214 (honest) → 0.291 (+CADICA). CADICA remains the biggest honest single-lever gain; patient diversity is the lever, not epochs or model size.
 
+**The 0.291 run's split accounting was wrong, and the leakage auditor certified it anyway (found 2026-08-16).** At run time (2026-07-16) `group_key()` had **no `_CADICA_RE`** — it landed the next day in `0fb7390`. Arithmetic from the run log: 5,816 images / 5,560 groups, minus ARCADE (1,500) and Danilov (64), leaves **3,996 CADICA groups for 3,996 CADICA frames** — every frame its own patient. Two consequences, stated precisely:
+
+- **The images did not actually leak.** `cadica_to_yolo._convert` calls `io.split_of(patient)`, not `split_of(stem)`, so CADICA was patient-split on disk regardless. **F1 0.291 is not leakage-inflated.**
+- **The certificate and every group number from that run are meaningless**, and the split *size* was wrong: hashing only **42 CADICA patients** at `val_frac=0.15` put ~41% of CADICA frames in val. The model trained on ~59% of its best data and was scored on a val set dominated by a handful of patients — both the fit and the estimate are degraded and high-variance.
+
+Why nothing caught it: `audit_split_leakage()` carried `danilov_stems` / `cathaction_stems` / `avf_stems` regex-no-op tripwires but **no `cadica_stems`** — the same bug class as audit P0.2. Group-overlap alone cannot catch a silent no-op: a per-frame split has every group unique by construction and passes trivially. **Closed 2026-08-16** (§10).
+
+- [x] `cadica_stems=` tripwire + `cadica_to_yolo.main` self-audit + notebook wiring — **done 2026-08-16**
+- [ ] **Split-fraction fix:** independent per-patient hashing cannot hit the target 15–20% val with 42 groups. Replace with a deterministic per-patient **quota** split (sort patients by hash, admit until the val frame count reaches the target)
 - [ ] **P1.0 per-source val table** (GPU, ~1 hr) — the gate on every later lever; code landed 2026-07-17, never run
+- [ ] Re-run conversion + retrain on the corrected split before any Phase-2 lever is judged
 - [ ] P1.1 op-point sweep + per-video sensitivity; P1.4 combined aug+split re-run
 - [ ] Phase 2 levers (harmonize, balance, SSL) — **hard-ordered behind P1.0**
 - [ ] **Open clinical question:** is per-frame F1 even the right gate? The proposed reframe (per-video sensitivity + abstention) needs clinical sign-off and has been pending since 2026-07-17.
@@ -340,6 +350,8 @@ Catalogued 2026-08-09, several still open as of this update:
 ---
 
 ## 10. Changelog — entries since the 2026-08-13 rebuild
+
+- **2026-08-16** — **CADICA split-audit hole closed + ONNX INT8 clDice gate evidenced.** (a) `audit_split_leakage()` gained a `cadica_stems=` regex-no-op tripwire, the fourth alongside `danilov_stems`/`cathaction_stems`/`avf_stems`; `cadica_to_yolo._convert` now returns the stems it wrote and `main()` audits its own output (previously **nothing audited the combined corpus** — `danilov_to_yolo.main` audits, then CADICA writes into the same tree *afterwards*, so the gate depended entirely on notebook cell ordering); `kaggle_stenosis_plug_and_play.ipynb` cell 8 now builds the CADICA stem set from raw and passes it. This closes the hole that let the 2026-07-16 run print "LEAKAGE CHECK PASSED" over a CADICA grouping it had never checked (§4.5). (b) The static-PTQ INT8 artifact was **Dice-gated only** since 2026-08-13 while `configs/edge_export.yaml` declares the HARD gate on **clDice** — measured now on the same 50 val pairs: clDice 0.9786 vs fp32 0.9783 (drop −0.0003 ≤ 0.03), Dice 0.9156 both, mask agreement 0.9996. **PASS.** Suite 621 → **626** (+5, all watched fail first).
 
 > Earlier entries (2026-07-11 → 2026-08-13) are preserved in full in **Part II §8** below.
 

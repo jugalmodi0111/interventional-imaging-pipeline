@@ -155,13 +155,17 @@ def _convert(root, out_dir, size, max_per_patient=None):
 
     If ``max_per_patient`` is set, the record list is capped per patient (``_cap_records``, evenly
     spaced across each patient's frames) BEFORE any image is read/written, so the near-duplicate
-    keyframes that get dropped never touch disk."""
+    keyframes that get dropped never touch disk.
+
+    Returns the list of output stems actually written, so ``main`` can hand the TRUE CADICA stem
+    set to ``audit_split_leakage(cadica_stems=...)`` and have the grouping proven independently of
+    ``group_key``'s regex rather than assumed."""
     import cv2
     from src.data_prep import io_utils as io
     records = list(_iter_frames(root))
     if max_per_patient is not None:
         records = _cap_records(records, max_per_patient)
-    n = 0
+    written = []
     for patient, video, ip, gp in records:
         g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
         if g is None:
@@ -176,8 +180,8 @@ def _convert(root, out_dir, size, max_per_patient=None):
         cv2.imwrite(os.path.join(out_dir, "images", sp, stem + ".png"),
                     cv2.resize(io.clahe_unsharp(g), (size, size)))
         open(os.path.join(out_dir, "labels", sp, stem + ".txt"), "w").write("\n".join(lines))
-        n += 1
-    return n
+        written.append(stem)
+    return written
 
 
 def main(cfg):
@@ -189,12 +193,26 @@ def main(cfg):
     root = d["root"]
     size = cfg.get("model", {}).get("imgsz", 640)
     max_per_patient = cfg.get("datasets", {}).get("cadica", {}).get("max_frames_per_patient")
-    n = _convert(root, OUT, size, max_per_patient=max_per_patient)
+    stems = _convert(root, OUT, size, max_per_patient=max_per_patient)
+    n = len(stems)
     if n == 0:
         print(f"[cadica] WARNING: no CADICA frames converted under {root!r}; check layout.")
         return 0
+    # Honesty gate, mirroring danilov_to_yolo.main. CADICA is written into the SAME OUT tree AFTER
+    # the Danilov converter has already audited it, so without this call nothing ever audits the
+    # combined corpus -- the 2026-07-16 hole. Passing the stems we just wrote also proves the
+    # p<patient>_v<video>_<frame> collapse actually happened (a regex no-op degrades the split to
+    # per-frame and makes every group/val-fraction number downstream wrong).
+    rep = io.audit_split_leakage(OUT, cadica_stems=stems)
     yml = io.write_yolo_datayaml(OUT, names=NAMES)
     print(f"CADICA -> {OUT} : {n} frames ; data cfg {yml}")
+    print(f"LEAKAGE CHECK PASSED — split is patient-grouped and honest\n"
+          f"  train {rep['train_imgs']} imgs / {rep['train_groups']} groups | "
+          f"val {rep['val_imgs']} imgs / {rep['val_groups']} groups "
+          f"(val ~{rep['val_frac_by_group']:.0%} by group)\n"
+          f"  cadica: {rep['cadica']['cadica_frames']} frames -> "
+          f"{rep['cadica']['patient_groups']} patient groups, "
+          f"{rep['cadica']['ungrouped']} ungrouped ({rep['cadica']['ungrouped_frac']:.0%})")
     return n
 
 

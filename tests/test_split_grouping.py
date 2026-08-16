@@ -137,6 +137,45 @@ def test_audit_raises_when_danilov_names_defeat_group_key(tmp_path):
         audit_split_leakage(tmp, danilov_stems=bad)
 
 
+# --- audit_split_leakage: cadica_stems silent-grouping-no-op guard ------------------------------
+# The 2026-07-16 CADICA run (experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150) printed
+# "LEAKAGE CHECK PASSED ... train 3909 imgs / 3685 groups | val 1907 imgs / 1875 groups". Subtract
+# ARCADE (1500) and Danilov (64) from those 5560 groups and CADICA contributed 3996 groups for its
+# 3996 frames -- every frame its own group. group_key() had no _CADICA_RE at that point (it landed
+# the next day in 0fb7390), so the auditor certified a split whose CADICA grouping it had never
+# actually checked. Group overlap (1b) cannot catch this: a per-frame split has every group unique
+# by construction and passes trivially. cadica_stems mirrors danilov_stems/cathaction_stems/
+# avf_stems -- prove the collapse independently of the regex instead of trusting it.
+
+def test_audit_cadica_default_none_is_backward_compat_noop(tmp_path):
+    tmp = _write_split(str(tmp_path),
+                       train_stems=[f"p1_v1_{i:05d}" for i in range(3)],
+                       val_stems=["p2_v1_00000"])
+    rep = audit_split_leakage(tmp)          # no cadica_stems passed
+    assert rep["cadica"] is None
+
+
+def test_audit_cadica_grouped_frames_pass_and_report(tmp_path):
+    # A whole patient's frames on one side -> _CADICA_RE collapses each patient -> ungrouped == 0.
+    train = [f"p1_v{v}_{f:05d}" for v in range(1, 3) for f in range(50)]
+    val = [f"p2_v{v}_{f:05d}" for v in range(1, 3) for f in range(50)]
+    tmp = _write_split(str(tmp_path), train_stems=train, val_stems=val)
+    rep = audit_split_leakage(tmp, cadica_stems=train + val)
+    assert rep["cadica"]["ungrouped"] == 0
+    assert rep["cadica"]["patient_groups"] == 2
+    assert rep["cadica"]["cadica_frames"] == 200
+
+
+def test_audit_raises_when_cadica_names_defeat_group_key(tmp_path):
+    # Exactly the 2026-07-16 state: CADICA-shaped frames that _CADICA_RE does not match, so
+    # group_key falls through to `return name` and the split silently degrades to per-frame.
+    bad = [f"patient1_video1_{i:05d}" for i in range(20)]
+    assert all(group_key(s) == s for s in bad), "fixture must actually defeat _CADICA_RE"
+    tmp = _write_split(str(tmp_path), train_stems=bad[:14], val_stems=bad[14:])
+    with pytest.raises(AssertionError, match="UNGROUPED CADICA"):
+        audit_split_leakage(tmp, cadica_stems=bad)
+
+
 # --- _cap_records (P1.3): CADICA per-patient frame cap, pure selection logic ----------------------
 
 def _cadica_rec(patient, video, i):
