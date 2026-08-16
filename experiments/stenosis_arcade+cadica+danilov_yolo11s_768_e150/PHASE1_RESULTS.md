@@ -124,6 +124,24 @@ gap-recovery only is the variant to test — but the honest baseline to beat is 
 
 ---
 
+## What this run did NOT measure — and why it matters
+
+**Per-video specificity is missing.** P1.1b scored only the 102 lesion videos. The run also walked
+**153 val videos with no lesion** — it ran inference on every frame of them and then discarded the
+result. So we have sensitivity 0.902 and **no false-flag rate at all**.
+
+Sensitivity alone is not a clinical proposal: a detector that flags every clip scores 1.000. Until
+the false-flag rate is known, 0.902 cannot be taken to a clinician as evidence for the gate reframe —
+it is half a number.
+
+Fixed 2026-08-16: the cell now computes **both** from the same inference pass and derives a full
+operating table by thresholding stored per-video max-confidences, rather than re-running inference
+once per confidence. It also prefers CADICA's own `lesionVideos.txt` / `nonlesionVideos.txt`
+manifests over inferring "no groundtruth dir ⇒ no lesion", because that inference silently converts
+an *unannotated* video into a negative and would overstate the false-flag rate; it reports which
+source it used. **Re-run required** — the numbers below stand, but the specificity column is still
+blank until then.
+
 ## What this changes
 
 1. **The clinical gate question is now answerable.** Take 0.902 per-video sensitivity to Dr. Reddy

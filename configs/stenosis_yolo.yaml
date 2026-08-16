@@ -45,6 +45,23 @@ metrics: [coco_ap, f1]
 val:    {conf: 0.001}                                         # low eval conf so recall (the costly axis) isn't throttled; add val.iou to override NMS IoU
 # Recall-first gate (Phase 1): a missed stenosis is the deadly error. qualifies_det requires BOTH
 # F1>=f1 AND recall>=recall. Surfaces recall in the gate line; expect FAIL until the levers land.
-target: {f1: 0.57, recall: 0.60}                             # F1 floor. NOTE: ARCADE stenosis SOTA ~0.5 -> 0.57 may exceed published; confirm with clinical stakeholders.
+# --- ACCEPTANCE GATE -------------------------------------------------------------------------
+# 2026-08-16: the per-FRAME gate below was answered by measurement and is no longer the primary
+# criterion. Per-video sensitivity is 0.902 (92/102 held-out lesion videos) while per-frame recall
+# is 0.27 -- the product deploys a screening flag that fires per STUDY, not per frame, so per-frame
+# F1 was measuring something the product does not do. Dr. Reddy accepted the reframe ("good to go
+# but have to improve a bit") and asked for high precision, but gave NO numbers for either axis.
+# Per repo convention (cf. avf_fistulography.yaml sensitivity: null) an unquantified target is NOT
+# signed off, so the new gate stays null until signature. See docs/STENOSIS_GATE_PROPOSAL.md.
+target_per_video:
+  sensitivity: null      # PROPOSED 0.95 (a reading of "improve a bit" from 0.902) -- UNSIGNED
+  specificity: null      # BLOCKED: needs expected prevalence + target PPV; not yet measured either
+  operating_conf: null   # pick from the P1.1c sweep once specificity is signed off
+  signed_off: false
+# Per-FRAME gate, DEMOTED but still enforced. Do NOT delete these keys to retire it:
+# train_detector.qualifies_det defaults to f1=0.57 when target.f1 is absent, so removing the key
+# silently re-imposes the same floor. It stays here, explicit and truthful, until the per-video gate
+# is signed and a per-video gate function exists (none does yet -- P1.1b/c runs in the notebook).
+target: {f1: 0.57, recall: 0.60}                             # per-frame; NOT the product's metric
 # target: {f1: 0.57}                                          # prior F1-only gate (recall unweighted)
 export: {onnx: true, int8: true, tensorrt: false}
