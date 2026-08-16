@@ -442,7 +442,19 @@ def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5, cat
         cadica_report = {"cadica_frames": len(k_in_split),
                          "ungrouped": len(ungrouped), "ungrouped_frac": round(frac, 3),
                          "patient_groups": len({group_key(s) for s in k_in_split})}
-        assert k_in_split and frac <= max_ungrouped_frac, (
+        # Distinguish "nothing to check" from "checked and ungrouped". The caller builds
+        # cadica_stems from raw (e.g. walking data/raw/cadica) while the split holds the
+        # converter's OUTPUT stems; a mirror that names frames differently makes those two sets
+        # disjoint. Still fail closed -- the grouping is unproven either way -- but do not report it
+        # as a leak, or an operator goes hunting for one that isn't there.
+        assert k_in_split, (
+            f"NO CADICA STEMS IN SPLIT: none of the {len(kset)} stems passed as cadica_stems "
+            f"appear in the produced split, so the grouping could not be verified at all. The "
+            f"raw filenames and the converter's output stems disagree (cadica_to_yolo._out_stem "
+            f"emits '<patient>_<video>_<frame>'). Check what is actually under the CADICA raw root "
+            f"before trusting any F1. Example passed stem: {sorted(kset)[:3]}; "
+            f"example split stem: {sorted(train | val)[:3]}")
+        assert frac <= max_ungrouped_frac, (
             f"UNGROUPED CADICA: {len(ungrouped)}/{len(k_in_split)} "
             f"({frac:.0%}) CADICA frames were NOT collapsed by group_key — their filenames do not "
             f"match the assumed 'p<patient>_v<video>_<frame>' pattern, so the split is per-frame "

@@ -166,6 +166,19 @@ def test_audit_cadica_grouped_frames_pass_and_report(tmp_path):
     assert rep["cadica"]["cadica_frames"] == 200
 
 
+def test_audit_says_so_when_no_cadica_stem_is_in_the_split(tmp_path):
+    # The notebook builds cadica_stems by walking data/raw/cadica, while the split holds the
+    # converter's OUTPUT stems. If a CADICA mirror names frames differently from the assumed
+    # pXX_vYY_NNNNN, those two sets do not intersect and the guard has nothing to check. It must
+    # still fail closed (grouping unproven) but say WHY -- the old shared message would have read
+    # "0/0 (0%) frames were NOT collapsed", sending an operator after a leak that isn't there.
+    tmp = _write_split(str(tmp_path),
+                       train_stems=[f"p1_v1_{i:05d}" for i in range(6)],
+                       val_stems=["p2_v1_00000"])
+    with pytest.raises(AssertionError, match="NO CADICA STEMS"):
+        audit_split_leakage(tmp, cadica_stems=[f"00{i:03d}" for i in range(20)])
+
+
 def test_audit_raises_when_cadica_names_defeat_group_key(tmp_path):
     # Exactly the 2026-07-16 state: CADICA-shaped frames that _CADICA_RE does not match, so
     # group_key falls through to `return name` and the split silently degrades to per-frame.
