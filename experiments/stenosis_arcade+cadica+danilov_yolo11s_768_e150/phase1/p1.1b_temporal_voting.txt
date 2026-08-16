@@ -1,0 +1,6 @@
+CADICA val videos: 255 (patients hashed to the val split)
+
+per-video sensitivity (lesion videos, conf 0.1, min_hits 2, IoU 0.3)
+  lesion videos scored: 102
+  raw   per-video sensitivity: 92/102 = 0.902
+  voted per-video sensitivity: 85/102 = 0.833  (temporal-voting lift)

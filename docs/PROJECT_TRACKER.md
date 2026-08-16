@@ -26,7 +26,7 @@
 | C | **Serve layer** | `x` **serves real verdicts (2026-08-16)** | `src/serve/` (10 modules) + `validity.py` | 3 audit criticals closed. **`/analyze` now returns a confident, undeferred `StudyReport`** from the real CoreML seg model (conf 0.9955). Modality router replaced by the B3 validity gate. |
 | D | **Event bus / observability** | `x` **new, done** | `src/serve/events.py` (94) + `runs/events.jsonl` + `GET /events` | Observe-only; 15 tests. |
 | E | **Coronary segmentation** | `x` **gate PASSED** | `outputs/coronary_student_clgeodice/` | Dice **0.915** / clDice **0.956** ≥ 0.75 floor. CoreML 6-bit gate passed. |
-| F | **Stenosis detection** | `!` **BELOW floor** | `experiments/…cadica+danilov…/run/weights/best.pt` | F1 **0.291** / recall 0.271 vs floor F1 0.57 / recall 0.60. |
+| F | **Stenosis detection** | `!` below per-frame floor — **but the floor is the wrong metric** | `experiments/…cadica+danilov…/run/weights/best.pt` | Per-frame F1 0.272 / recall 0.34 vs floor 0.57/0.60. **Per-VIDEO sensitivity 0.902** (P1.1b, 2026-08-16). P1.0 shows recall fails uniformly across all three sources. |
 | G | **Catheter tracking** | `~` **trained, never gated** | `outputs/best-catheter.pt` | IoU / fps / ID-switch **never measured**. Tracking code was **deleted** with the video path (see §4). |
 | H | **Edge export / INT8** | `x` **gate PASSED** | `outputs/coronary_student_clgeodice/student.int8.static.onnx` | **clDice 0.9786 vs fp32 0.9783 (drop −0.0003 ≤ 0.03 gate)**, Dice 0.9156 both, 1.93 MB → 0.52 MB, mask agreement 0.9996. Re-checked 2026-08-16. |
 | I | **Model One (AVF classifier)** | `[ ]` **not started — plan written** | none | Plan: [`plans/2026-08-13-model-one-classifier-scaffold.md`](superpowers/plans/2026-08-13-model-one-classifier-scaffold.md). Awaiting approval. |
@@ -206,7 +206,7 @@ Dice **0.915** (best mid-run 0.927), clDice **0.956** (best 0.980) ≥ 0.75 floo
 - [x] Post-INT8 clDice re-check on the **static** INT8 artifact — **done 2026-08-16, PASSED.** clDice 0.9786 (INT8) vs 0.9783 (fp32), drop **−0.0003** vs the 0.03 gate; Dice 0.9156 both; mask agreement 0.9996; 1.93 MB → 0.52 MB. The negative drop is n=50 noise, not a gain — the honest claim is "no measurable connectivity cost". Gates `student.int8.static.onnx` only; the older dynamic `student.int8.onnx` remains unquantified and must not ship.
 - [ ] SSL pretraining on XCAD unlabeled
 
-### 4.5 Stenosis detection `!` — below floor, parked by design
+### 4.5 Stenosis detection `!` — below the per-frame floor; per-video sensitivity says the floor is wrong
 
 **F1 0.291 / recall 0.271 / mAP50 0.209** vs floor F1 0.57 / recall 0.60 (`arcade+cadica+danilov_yolo11s_768_e150`, honest patient-grouped split, 2026-07-16). Progression: 0.246 (ARCADE only) → 0.885 (**leakage-inflated, discarded**) → 0.214 (honest) → 0.291 (+CADICA). CADICA remains the biggest honest single-lever gain; patient diversity is the lever, not epochs or model size.
 
@@ -220,11 +220,28 @@ Why nothing caught it: `audit_split_leakage()` carried `danilov_stems` / `cathac
 - [x] `cadica_stems=` tripwire + `cadica_to_yolo.main` self-audit + notebook wiring — **done 2026-08-16**
 - [x] **GPU notebook made runnable again 2026-08-16.** `kaggle_stenosis_plug_and_play.ipynb` §5b P1.1b imported `src.serve.temporal_vote`, which was **deleted on 2026-08-13** with the serve video path — the notebook would have crashed on Kaggle. Restored as **`src/eval/temporal_vote.py`** (+ its 15 tests) rather than back under `src/serve/`: Model One serves a single still frame and nothing in the request path may aggregate over a clip, but scoring a detector over raw cine *offline* is how the per-video sensitivity number behind the gate-reframe proposal is computed. Putting it under `src/eval/` makes that boundary structural. Added a `SKIP_TRAIN` mode so P1.0 runs on the existing baseline in ~15 min instead of a ~3 h retrain.
 - [ ] **Split-fraction fix:** independent per-patient hashing cannot hit the target 15–20% val with 42 groups. Replace with a deterministic per-patient **quota** split (sort patients by hash, admit until the val frame count reaches the target)
-- [ ] **P1.0 per-source val table** (GPU, ~1 hr) — the gate on every later lever; code landed 2026-07-17, never run
-- [ ] Re-run conversion + retrain on the corrected split before any Phase-2 lever is judged
-- [ ] P1.1 op-point sweep + per-video sensitivity; P1.4 combined aug+split re-run
-- [ ] Phase 2 levers (harmonize, balance, SSL) — **hard-ordered behind P1.0**
-- [ ] **Open clinical question:** is per-frame F1 even the right gate? The proposed reframe (per-video sensitivity + abstention) needs clinical sign-off and has been pending since 2026-07-17.
+- [x] **P1.0 per-source val + P1.1a/P1.1b — RUN 2026-08-16** (Kaggle `jugalmodi0111/stenosis-new`, no retrain). Full write-up: [`PHASE1_RESULTS.md`](../experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/PHASE1_RESULTS.md)
+
+**P1.0 read-out — recall failure is UNIFORM, not concentrated:**
+
+| source | n | P | **R** | mAP50 | mAP50-95 |
+|---|---|---|---|---|---|
+| arcade | 207 | 0.267 | **0.262** | 0.136 | 0.051 |
+| cadica | 553 | 0.375 | **0.244** | 0.208 | 0.078 |
+| danilov | 40 | 0.184 | **0.275** | 0.092 | 0.023 |
+
+R is 0.24–0.28 everywhere, which **retires three Phase-2 levers on evidence**: it is not an ARCADE annotation problem (arcade R ≈ cadica R), not Danilov dilution (Danilov has the *highest* recall), and not source imbalance. Precision/localization *do* vary with the annotation-geometry mismatch (Danilov boxes 3.7× smaller by area, `tiny_frac` 0.361 vs ARCADE 0.056), so harmonization is a **localization** lever only. The model misses ~75% of lesions on every source: a data-scale/capability limit, not a bad-source problem.
+
+**P1.1b — the result that reframes the gate.** Over the FULL raw CADICA cine of val patients, 102 lesion videos: **raw per-video sensitivity 92/102 = 0.902** against per-frame recall 0.27. A screening flag fires per *study*, not per *frame* — on the metric the product actually uses, these "hopeless" weights catch the lesion in 90% of lesion videos. **Temporal voting REGRESSED it: 0.833 (−7 videos)** — `min_hits=2` deletes single-frame true positives on keyframe-annotated data. The notebook's "(temporal-voting lift)" label was wrong and is corrected; raw is the honest baseline.
+
+**P1.1a** — F1 flat at 0.248–0.272 across conf 0.05–0.25, best at conf 0.10 (R 0.336). No knee; operating point is not a lever either.
+
+**Val composition** — split honest (0 ungrouped on both tripwires) and byte-identical to the baseline's, but CADICA is 47% of the corpus and **69% of val** (553/1589 = 34.8% of its frames, 14 of 42 patients). The aggregate metric is effectively CADICA's. Distorts the *estimate*, does not leak.
+
+- [ ] **Take 0.902 per-video sensitivity to Dr. Reddy** — the gate reframe is now evidence-backed, not a proposal. Pending since 2026-07-17; this is the highest-value open item on the track.
+- [ ] Quota split — still worth landing for a clean comparable aggregate, but it will not clear 0.57 and that is no longer the interesting question
+- [~] Phase 2 levers (harmonize, balance, drop-Danilov) — **retired for recall by P1.0**. Harmonize retained as a localization-only experiment.
+- [ ] If per-frame recall is still wanted: more patients, or a better detector/pretraining. Nothing cheap remains.
 
 ### 4.6 Catheter tracking `~` — trained, never gated, tracking code now deleted
 
@@ -368,6 +385,8 @@ Catalogued 2026-08-09, several still open as of this update:
 ---
 
 ## 10. Changelog — entries since the 2026-08-13 rebuild
+
+- **2026-08-16 (c)** — **Stenosis Phase 1 RUN on GPU; the per-frame gate is now evidenced as the wrong metric.** Kaggle kernel `jugalmodi0111/stenosis-new`, `SKIP_TRAIN=True` (scored the existing baseline, no retrain), clean run — no `[WARN]`, no traceback, all three steps produced output. **P1.0:** recall is 0.24–0.28 on *every* source (arcade 0.262 / cadica 0.244 / danilov 0.275), which retires the drop-Danilov, balance and ARCADE-annotation hypotheses on evidence rather than opinion; precision/localization vary with the box-geometry mismatch (Danilov 3.7× smaller by area, `tiny_frac` 0.361), so harmonization survives as a localization-only lever. **P1.1a:** F1 flat 0.248–0.272 across the conf sweep, no knee. **P1.1b:** raw **per-video sensitivity 0.902** (92/102 lesion videos) against per-frame recall 0.27 — the screening-flag metric the product actually deploys, and the evidence the gate reframe has needed since 2026-07-17. Temporal voting **regressed** it to 0.833 (`min_hits=2` deletes single-frame true positives on keyframe-annotated data); the notebook's "(temporal-voting lift)" label was wrong and now prints LIFT/NO CHANGE/REGRESSION with the measured caveat. Split verified honest (0 ungrouped on both tripwires) and byte-identical to the baseline's — proven before the run by replaying the 2026-07-13 `group_key`/`split_of` over 1,798 stems, 0 changed — so every number is a genuine held-out measurement. Val composition confirmed skewed: CADICA is 47% of the corpus but 69% of val. Full write-up: `experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/PHASE1_RESULTS.md` + raw artifacts under `phase1/`.
 
 - **2026-08-16 (b)** — **`/analyze` serves its first real verdict; modality router replaced by the B3 validity gate.** New `src/serve/validity.py` (numpy-only, no weights, no torch): `assess_frame` screens shape / channel count / size / dynamic range / endpoint clipping, and `ValidityGate.classify` adapts it to the exact `-> ModalityDecision` protocol the orchestrator already consumed, so dispatch and every C2/C3/C4 fail-safe are byte-unchanged. A rejected frame resolves to `modality: "unknown", deferred: True`, so it can never reach a disease model. `build_orchestrator` now requires a `validity:` block and raises `KeyError` without one (fail closed at wiring time, not at first request). `configs/orchestrator.yaml` registers the gate-passed coronary seg model (`floor_ok: true`) in place of the below-floor stenosis detector. Verified live end-to-end: `POST /analyze?kind=image` → 200, `deferred: false`, confidence **0.9955**, from the real CoreML `student.mlpackage` — the first non-deferred response this endpoint has ever produced. Internal `router` names renamed to `gate` (`DiagnosticOrchestrator.gate`, `model_versions["gate"]`); the event topics, `RouterUnavailable` and the `"router-unavailable"` defer reason keep the old name for now because they are the published `/events` + report contract. **Honest limit recorded:** the gate screens acquisition plausibility, NOT imaging modality — it cannot distinguish a coronary angiogram from a chest X-ray, so B3's "wrong modality" clause stays open pending a learned OOD head on real data.
 

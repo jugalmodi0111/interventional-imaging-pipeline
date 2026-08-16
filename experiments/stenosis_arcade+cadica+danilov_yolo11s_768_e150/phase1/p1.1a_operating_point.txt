@@ -1,0 +1,7 @@
+operating-point sweep (recall-first: pick the knee where R rises but P still acceptable)
+conf   P      R      F1     mAP50
+0.05   0.252  0.289  0.269  0.155
+0.10   0.229  0.336  0.272  0.142
+0.15   0.265  0.272  0.268  0.127
+0.20   0.285  0.230  0.255  0.116
+0.25   0.314  0.204  0.248  0.107
