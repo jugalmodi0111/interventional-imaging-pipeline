@@ -1,6 +1,6 @@
 from src.serve.registry import TaskEntry
 from src.serve.diagnosis import det_to_findings, seg_to_finding, study_defer
-from src.serve.router import ModalityDecision
+from src.serve.validity import ModalityDecision
 
 ENTRY = TaskEntry("coronary_angiography", "det", "best.pt", "Coronary angiography",
                   "coronary_stenosis", "Possible coronary artery stenosis", floor_ok=True)

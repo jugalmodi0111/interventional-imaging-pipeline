@@ -17,7 +17,7 @@ provisional and every model in this repo as research-only (§7).
 [`PROJECT_TRACKER.md`](PROJECT_TRACKER.md) §3.5, §3.2 ·
 [`Model_Pipeline_Playbook.md`](Model_Pipeline_Playbook.md) §0, §3.1, §5 ·
 [`../src/serve/stenosis_triage.py`](../src/serve/stenosis_triage.py) ·
-[`../src/serve/router.py`](../src/serve/router.py).
+[`../src/serve/validity.py`](../src/serve/validity.py).
 
 ---
 
@@ -55,7 +55,11 @@ supports a clinician's judgment; it never replaces it"*).
 
 This is enforced in the output contract, not just in prose: the code never emits a diagnosis. It
 emits a suggestion plus a confidence plus, where warranted, a deferral
-(`src/serve/stenosis_triage.py::triage_decision`, `src/serve/router.py::decide_modality`).
+(`src/serve/stenosis_triage.py::triage_decision`, `src/serve/validity.py::ValidityGate.classify`).
+The B3 validity gate is the first of these: an input it will not vouch for is refused outright
+(`modality: unknown`, `deferred: true`) and no model is ever run on it. Note its honest limit —
+it screens acquisition plausibility (corrupt, blank, blown-out, colour, undersized), NOT imaging
+modality; rejecting a *wrong-modality* input needs the learned OOD head, which does not exist yet.
 
 **Required output copy convention** — this binds any UI or report text built on top of these
 functions:

@@ -1,15 +1,21 @@
-"""Diagnostic orchestrator: route a frame -> the right task model -> typed findings -> StudyReport.
+"""Diagnostic orchestrator: gate a frame -> the right task model -> typed findings -> StudyReport.
 
-Ties together the router, registry, and diagnosis layer: `analyze_frame` classifies the modality,
-resolves it to a TaskEntry, runs the injected model, and turns its raw output into typed Findings,
-all funneled through `study_defer` for the final study-level DEFER call. Models are injected via
+Ties together the validity gate, registry, and diagnosis layer: `analyze_frame` asks the gate
+whether this input may be read at all, resolves the resulting modality to a TaskEntry, runs the
+injected model, and turns its raw output into typed Findings, all funneled through `study_defer`
+for the final study-level DEFER call. Models are injected via
 `model_factory(entry) -> callable(frame_gray) -> dict` so this file is unit-tested with fakes -- no
 torch/ultralytics/coremltools import here, ever. `build_orchestrator(cfg_path)` (bottom of this
 file) is the one factory that wires a REAL model_factory (`_model_factory`, backed by
-`src.serve.infer.DetModel`/`SegModel`) plus a real `ModalityRouter` from a YAML config; even it only
+`src.serve.infer.DetModel`/`SegModel`) plus a real `ValidityGate` from a YAML config; even it only
 imports the heavy stack lazily, inside its own body, so `import src.serve.orchestrator` itself
 never touches torch/ultralytics/coremltools -- only *calling* `build_orchestrator` (or a model
 callable it built) does.
+
+The decision source was a 4-class `ModalityRouter` until 2026-08-16. Dialygo B3 specifies a
+*validity gate* ("reject any input that is not a valid vascular-access angiogram"), not a modality
+router, and Model One is single-modality -- so the router was deleted and `src.serve.validity.
+ValidityGate` took its place behind the identical `.classify(frame) -> ModalityDecision` protocol.
 
 A model callable built by `_model_factory` never lets a construction failure escape as a raw
 exception: a missing weights file, an unloadable/corrupt one, a missing heavy dependency, or an
@@ -17,15 +23,16 @@ unrecognized `entry.task` all collapse to a callable that raises `ModelUnavailab
 `analyze_frame` catches that at the single point a model is actually invoked and defers the WHOLE
 study (reason "model-unavailable") -- same fail-safe posture as every other defer path in this
 file: never a crash that takes down the endpoint, never a silently empty confident result. The
-router gets the same treatment: `ModalityRouter.classify` collapses its own load/run failures
-(missing weights file, timm/torch not installed, corrupt state_dict) into `RouterUnavailable`, and
-`analyze_frame` converts that into a deferred study (reason "router-unavailable") so an operator
-can tell "the router isn't deployed" apart from a genuine analysis bug -- previously it escaped as
-a raw ModuleNotFoundError and surfaced as the endpoint's generic "analysis-error".
+gate gets the same treatment: a `classify` that collapses its own load/run failures into
+`RouterUnavailable` makes `analyze_frame` defer the study (reason "router-unavailable") so an
+operator can tell "the gate isn't deployed" apart from a genuine analysis bug -- previously it
+escaped as a raw ModuleNotFoundError and surfaced as the endpoint's generic "analysis-error".
+Today's `ValidityGate` is numpy-only and cannot fail this way, but the contract stays in place for
+the learned OOD gate that will have weights.
 
-Safety default is DEFER, not guess: a router that already deferred (unknown modality, low quality,
-thin margin) short-circuits before any model runs -- no wasted inference, no spurious audit entry, no
-confident diagnosis the router itself didn't trust. A resolved modality with no registered TaskEntry
+Safety default is DEFER, not guess: a gate decision that already deferred (input rejected, quality
+too low, uncertain) short-circuits before any model runs -- no wasted inference, no spurious audit
+entry, no confident diagnosis the gate itself didn't trust. A resolved modality with no registered TaskEntry
 (`registry.resolve` -> None) is deliberately NOT special-cased here: `study_defer` already treats an
 empty findings list as an unscreened study (reason "no-findings") -- adding a second, conflicting
 "unsupported-modality" guard on top of that would just race the existing one, so we don't.
@@ -48,12 +55,19 @@ from src.eval.audit import input_hash, record
 
 
 class DiagnosticOrchestrator:
-    """route(modality) -> resolve(model) -> infer -> typed findings -> StudyReport, deferring on any
+    """gate(input) -> resolve(model) -> infer -> typed findings -> StudyReport, deferring on any
     uncertainty. `model_factory(entry) -> callable(frame_gray) -> dict` is injected so tests supply
-    fakes; this class never constructs a real model itself."""
+    fakes; this class never constructs a real model itself.
 
-    def __init__(self, router, registry, model_factory, cfg=None, bus=None):
-        self.router = router
+    `gate` is any object exposing `.classify(frame) -> ModalityDecision` (today
+    `src.serve.validity.ValidityGate`). It is the sole authority on whether a frame may be read at
+    all: a decision it defers, or that names modality "unknown", stops the pipeline before any
+    disease model runs. NB the event topics (`router.decided`, `router.unavailable`) and the defer
+    reason `"router-unavailable"` still carry the pre-B3 name -- they are the published /events and
+    report contract, so renaming them is a deliberate versioned change, not a refactor."""
+
+    def __init__(self, gate, registry, model_factory, cfg=None, bus=None):
+        self.gate = gate
         self.registry = registry
         self.model_factory = model_factory
         self.cfg = cfg or {}
@@ -113,12 +127,12 @@ class DiagnosticOrchestrator:
     def analyze_frame(self, frame_gray):
         """Classify one frame's modality, run its task model (if any), and return a StudyReport.
         Never raises on router/model uncertainty -- it defers instead."""
-        versions = {"router": getattr(self.router, "weights", "router")}
+        versions = {"gate": getattr(self.gate, "weights", "validity-gate")}
         self._publish("frame.received", input_hash=input_hash(frame_gray))
         try:
-            dec = self.router.classify(frame_gray)
+            dec = self.gate.classify(frame_gray)
         except RouterUnavailable:
-            self._publish("router.unavailable", router=versions["router"])
+            self._publish("router.unavailable", router=versions["gate"])
             # The router itself could not be loaded or run (weights not deployed, timm/torch
             # missing, corrupt state_dict). Without a modality decision NO task model may run, so
             # defer the whole study -- with a reason an operator can tell apart from both a genuine
@@ -187,12 +201,16 @@ class ModelUnavailable(Exception):
 
 
 class RouterUnavailable(RuntimeError):
-    """Raised by `ModalityRouter.classify` (src/serve/router.py) when the modality router ITSELF
-    could not be loaded or run: a missing weights file, timm/torch not installed, a corrupt
-    state_dict, or a torch error mid-forward. The router counterpart of `ModelUnavailable`:
-    `analyze_frame` catches it and defers the whole study with reason "router-unavailable", so an
-    undeployed router is operationally distinguishable from a genuine bug -- which still surfaces
-    as the endpoint's generic "analysis-error"."""
+    """Raised by a decision gate's `classify` when the GATE ITSELF could not be loaded or run: a
+    missing weights file, a missing dependency, a corrupt state_dict, an error mid-forward. The
+    gate counterpart of `ModelUnavailable`: `analyze_frame` catches it and defers the whole study
+    with reason "router-unavailable", so an undeployed gate is operationally distinguishable from
+    a genuine bug -- which still surfaces as the endpoint's generic "analysis-error".
+
+    The name predates the 2026-08-16 router -> validity-gate change and is kept deliberately: it is
+    part of the published `StudyReport.defer_reason` / `/events` contract, so renaming it is a
+    versioned change rather than a refactor (tracked in PROJECT_TRACKER §4.2). No current gate can
+    raise it -- `ValidityGate` is numpy-only -- but the learned OOD gate will have weights."""
 
 
 def _load_det(model_path):
@@ -249,30 +267,33 @@ def _model_factory(entry):
 
 
 def build_orchestrator(cfg_path):
-    """Wire a real `DiagnosticOrchestrator` from a YAML config: a real `ModalityRouter` (edge
-    classifier weights + labels + thresholds) and the real `_model_factory` (real `DetModel`/
-    `SegModel` per registry entry, fail-safe on a bad weights file -- see `ModelUnavailable`).
-    `yaml`/`ModalityRouter`/`load_registry` are all imported here, inside the function body, not at
-    module scope: calling `build_orchestrator` is the one place this module actually touches the
-    heavy stack, and even then only through lazy imports several calls deep (`ModalityRouter` itself
-    doesn't load torch until `.classify()` runs; `_model_factory` doesn't load coremltools until a
-    model is actually invoked) -- importing the module itself never does.
+    """Wire a real `DiagnosticOrchestrator` from a YAML config: a real `ValidityGate` (Dialygo B3
+    input gate) and the real `_model_factory` (real `DetModel`/`SegModel` per registry entry,
+    fail-safe on a bad weights file -- see `ModelUnavailable`). `yaml`/`ValidityGate`/
+    `load_registry` are all imported here, inside the function body, not at module scope: calling
+    `build_orchestrator` is the one place this module touches the heavy stack, and even then only
+    through lazy imports several calls deep (`_model_factory` doesn't load coremltools until a model
+    is actually invoked) -- importing the module itself never does. The gate itself is numpy-only.
+
+    The `validity:` block is REQUIRED and raises `KeyError` if absent: a config with no gate would
+    leave every input unvouched-for, which is exactly the failure B3 exists to prevent, so this
+    fails closed at wiring time rather than at the first request.
 
     Config shape (see tests/test_orchestrator.py for a minimal example):
-        router: {weights: ..., labels: [...], thresholds: {keep_thr, margin, quality_thr}}
+        validity: {modality: <the one deployed modality>, accept_score: 0.5}
         modalities: {<modality>: {task, model_path, display_name, finding_label, finding_display,
                                    floor_ok}, ...}
         runtime: {temperature}   # optional, passed through as cfg
     """
     import yaml
     from src.serve.events import EventBus, JsonlSink
-    from src.serve.router import ModalityRouter
+    from src.serve.validity import ValidityGate
     from src.serve.registry import load_registry
 
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f) or {}
-    rc = cfg["router"]
-    router = ModalityRouter(rc["weights"], rc["labels"], rc.get("thresholds"))
+    vc = cfg["validity"]
+    gate = ValidityGate(vc["modality"], **{k: v for k, v in vc.items() if k != "modality"})
     registry = load_registry(cfg_path)
 
     # Observe-only event mirror: everything the pipeline does is published here, persisted next to
@@ -283,5 +304,5 @@ def build_orchestrator(cfg_path):
     for entry in registry.values():
         bus.publish("registry.loaded", modality=entry.modality, task=entry.task,
                     model_path=entry.model_path, floor_ok=entry.floor_ok)
-    return DiagnosticOrchestrator(router, registry, _model_factory, cfg=cfg.get("runtime", {}),
+    return DiagnosticOrchestrator(gate, registry, _model_factory, cfg=cfg.get("runtime", {}),
                                   bus=bus)

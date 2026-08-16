@@ -1,7 +1,9 @@
 # core
 torch>=2.2
 torchvision>=0.17
-timm>=1.0                 # modality router: MobileNetV3 student (router.py imports it at load)
+timm>=1.0                 # Model One (B4): frozen foundation backbone for the classifier head.
+                          # NOT used by the serve path -- the modality router that needed it was
+                          # deleted 2026-08-16 in favour of src/serve/validity.py (numpy-only).
 numpy
 scipy
 pandas

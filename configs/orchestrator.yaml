@@ -1,14 +1,25 @@
 # orchestrator.yaml — the registry the orchestrator loads
-router:
-  weights: runs/router/student.pt
-  labels: [coronary_angiography, cerebral_dsa, other_xray, non_medical]
-  thresholds: {keep_thr: 0.60, margin: 0.15, quality_thr: 0.5}
+#
+# Single-modality deployment (Dialygo B3): there is nothing to route between, so the decision
+# source is a VALIDITY GATE, not a modality router. The gate vouches for the input or defers;
+# a frame it will not vouch for never reaches a model. See src/serve/validity.py for what the
+# gate does and does not check (it screens corrupt/blank/clipped/colour inputs; it is NOT a
+# learned modality discriminator — that half of B3 stays open until real data clears B5).
+validity:
+  modality: coronary_angiography
+  accept_score: 0.50       # below this the gate resolves to 'unknown' + defers (B3: uncertain -> defer)
 modalities:
   coronary_angiography:
-    task: det
-    model_path: experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/run/weights/best.pt
+    task: seg
+    model_path: outputs/coronary_student_clgeodice/student.mlpackage
     display_name: Coronary angiography
-    finding_label: coronary_stenosis
-    finding_display: Possible coronary artery stenosis (blockage) — clinician review required
-    floor_ok: false        # flip to true ONLY when Phase A clears F1>=0.57 recall>=0.60
-  # cerebral_dsa / tavr_ct / avf: add here as their models clear their floors (Phase F extension)
+    finding_label: coronary_vessel_map
+    finding_display: Coronary vessel segmentation — anatomical context, not a diagnosis
+    floor_ok: true         # gate PASSED: Dice 0.915 / clDice 0.956 vs the 0.75 floor
+                           # (outputs/coronary_student_clgeodice/RESULTS.md); both edge paths
+                           # clDice-gated (CoreML 6-bit, ONNX static INT8).
+# Stenosis detection is deliberately NOT registered. It sits at F1 0.291 / recall 0.271 against a
+# 0.57/0.60 floor, and its 2026-07-16 split accounting was wrong (PROJECT_TRACKER §4.5). Registering
+# it with floor_ok:false would make every /analyze response defer on its account, masking the one
+# model that can answer. Re-register it after P1.0 + the corrected-split retrain.
+# cerebral_dsa / tavr_ct / avf: add here as their models clear their floors.

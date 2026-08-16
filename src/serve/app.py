@@ -59,7 +59,7 @@ if FastAPI is not None:
     # (module scope of this `if` block, not top-of-file) and only actually invoked lazily inside
     # `_get_orch` -- it in turn only touches torch/ultralytics/coremltools several calls deeper,
     # still lazily -- so this module stays import-safe with no heavy deps installed (see
-    # test_router.py / test_orchestrator.py's subprocess import-safety guardrails for the pattern
+    # test_validity.py / test_orchestrator.py's subprocess import-safety guardrails for the pattern
     # this follows).
     #
     # Safety default is DEFER, not guess (same posture the orchestrator itself takes): a corrupt or
@@ -76,7 +76,7 @@ if FastAPI is not None:
     def _get_orch():
         """Lazily build (and cache) the real orchestrator singleton. Left as a module-level function
         (rather than inlined) so tests can monkeypatch it directly to simulate a build failure
-        (missing/broken `configs/orchestrator.yaml`) without needing a real router/registry."""
+        (missing/broken `configs/orchestrator.yaml`) without needing a real gate/registry."""
         global _orch
         if _orch is None:
             _orch = build_orchestrator(ORCH_CONFIG)

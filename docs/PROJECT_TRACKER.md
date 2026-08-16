@@ -2,7 +2,7 @@
 
 **Purpose:** single source of truth for *what is done* and *what is next*. Check boxes as you go.
 **Last updated:** 2026-08-16 · **Owner:** jugalmodi0111 · **HEAD at update:** `f616f19` (main, + uncommitted 2026-08-16 work)
-**Verified suite at update:** **626 passing** across 43 test files (`python -m pytest tests/ -q`)
+**Verified suite at update:** **623 passing** across 43 test files (`python -m pytest tests/ -q`)
 **Companion docs:** [`Model_Pipeline_Playbook.md`](Model_Pipeline_Playbook.md) (rationale) · [`DATASETS.md`](DATASETS.md) · [`INGEST_HDD_RUNBOOK.md`](INGEST_HDD_RUNBOOK.md) · [`Dialygo_Orientation_and_Requirements.md`](Dialygo_Orientation_and_Requirements.md) (B1–B9, binding) · [`INTENDED_USE.md`](INTENDED_USE.md)
 
 ---
@@ -23,7 +23,7 @@
 |---|---|---|---|---|
 | A | **DICOM ingest pipeline (T1.7)** | `x` **code-complete, 16/16 tasks** | `src/ingest/` (10 modules, 2,188 LOC) + `scripts/ingest_hdd.py` | Verified end-to-end on **synthetic DICOM only**. Real-drive run **blocked on B5/B9** (both flags `false`). |
 | B | **Leakage guard (P0.2)** | `x` **fixed & tested** | `src/data_prep/io_utils.py` `_AVF_RE` | 200 frames/1 patient → 1 group, verified. `audit_split_leakage(avf_stems=…)` tripwire added. |
-| C | **Serve layer** | `~` **hardened; no model behind it** | `src/serve/` (9 modules, 1,090 LOC) | 3 audit criticals **closed**. Every real `/analyze` returns `router-unavailable` — router has no weights. |
+| C | **Serve layer** | `x` **serves real verdicts (2026-08-16)** | `src/serve/` (10 modules) + `validity.py` | 3 audit criticals closed. **`/analyze` now returns a confident, undeferred `StudyReport`** from the real CoreML seg model (conf 0.9955). Modality router replaced by the B3 validity gate. |
 | D | **Event bus / observability** | `x` **new, done** | `src/serve/events.py` (94) + `runs/events.jsonl` + `GET /events` | Observe-only; 15 tests. |
 | E | **Coronary segmentation** | `x` **gate PASSED** | `outputs/coronary_student_clgeodice/` | Dice **0.915** / clDice **0.956** ≥ 0.75 floor. CoreML 6-bit gate passed. |
 | F | **Stenosis detection** | `!` **BELOW floor** | `experiments/…cadica+danilov…/run/weights/best.pt` | F1 **0.291** / recall 0.271 vs floor F1 0.57 / recall 0.60. |
@@ -77,7 +77,7 @@ Built 2026-08-09 → 2026-08-13 across 16 planned tasks. **All modules import to
 | `app.py` | 193 | `x` FastAPI: `/health`, `/infer`, `/analyze` (400 on `kind=video`), **`/events`** (SSE). |
 | `stenosis_triage.py` | 105 | `x` pure, tested |
 | `registry.py` | 95 | `x` fail-safe `floor_ok` parse; file-handle leak fixed |
-| `router.py` | 90 | `~` logic fine; **no weights exist**, `timm` in requirements but not installed |
+| `validity.py` | 145 | `x` **NEW 2026-08-16** — B3 input gate (`assess_frame` + `ValidityGate`), numpy-only, no weights. Replaces the router as the orchestrator's decision source |
 | `events.py` | 94 | `x` **NEW** — `EventBus`, `JsonlSink`, `RingBuffer` |
 | `report.py` | 64 | `x` `to_dict` now sanitizes numpy scalars (float32 500 fixed) |
 | `diagnosis.py` | 62 | `x` `det_to_findings` / `seg_to_finding` / `study_defer` |
@@ -87,7 +87,7 @@ Built 2026-08-09 → 2026-08-13 across 16 planned tasks. **All modules import to
 
 ### 2.3 Other implemented modules
 
-- `src/data_prep/` (1,626 LOC): `io_utils.py` (431 — grouping, splits, `audit_split_leakage`), `cathaction_to_yolo` (210), `cadica_to_yolo` (203), `autolabel_gdino` (148), `danilov_to_yolo` (140), `harmonize` (108), `balance` (94), `build_router_manifest` (91), `verify_sequence` (61), `preprocess` (50), `dca1_to_nnunet` (48), `arcade_to_coco` (31)
+- `src/data_prep/` (1,626 LOC): `io_utils.py` (431 — grouping, splits, `audit_split_leakage`), `cathaction_to_yolo` (210), `cadica_to_yolo` (203), `autolabel_gdino` (148), `danilov_to_yolo` (140), `harmonize` (108), `balance` (94), `verify_sequence` (61), `preprocess` (50), `dca1_to_nnunet` (48), `arcade_to_coco` (31)
 - `src/eval/` (553 LOC): `calibration.py` (167 — ECE, Brier, reliability, temperature scaling, AUROC, OOD), `annotation_qa` (148), `metrics` (77 — Dice/clDice/CLGeoDice/HD95), `val_by_source` (56), `audit` (25)
 - `src/export/` (332 LOC): `quantize_int8.py` (**94 — rewritten to real static PTQ 2026-08-13**, was a 10-line dynamic stub), `yolo_to_coreml` (89), `coreml_validate` (83), `to_coreml` (52), `to_onnx` (14)
 - `src/train/` (575 LOC): `train_detector.py` (334), `train_seg.py` (233), `train_audio.py` (**8 — stub**)
@@ -160,7 +160,21 @@ Built 2026-08-09 → 2026-08-13 across 16 planned tasks. **All modules import to
 
 ### 4.2 Serve layer `~`
 
-**What `/analyze` does today, verified live:** builds fine, but the router has no weights and `timm` is not installed → returns HTTP 200 with `deferred: true, defer_reason: "router-unavailable"`. That is the designed fail-safe, not a bug — but it means the endpoint has never served a real prediction.
+**What `/analyze` does today, verified live 2026-08-16:** returns a **real, confident, undeferred verdict**.
+
+```
+POST /analyze?kind=image  (data/processed/coronary/val/img/val_1.png)  -> 200
+  modality coronary_angiography · deferred false · defer_reason ""
+  finding  coronary_vessel_map · deferred false · reason "confident" · confidence 0.9955
+  versions {gate: validity-gate/heuristic-v1,
+            coronary_vessel_map: outputs/coronary_student_clgeodice/student.mlpackage}
+```
+
+Rejection paths, same run: blank → `degenerate-contrast`, all-black → `degenerate-contrast`, colour → `not-grayscale`, 64×64 → `too-small`; each defers with `modality: unknown` and **no model runs**. `kind=video` → 400, `kind=audio` → 400. Pinned by `tests/test_serve_real_stack.py` (7 tests, no fakes; skips when the gitignored artifact is absent).
+
+**What changed.** The 4-class modality router was replaced by the **B3 validity gate** (`src/serve/validity.py`). B3 specifies a *validity gate* ("reject any input that is not a valid vascular-access angiogram"), not a modality router, and Model One is single-modality — there is nothing to route between. The gate is numpy-only, needs no weights, and exposes the same `.classify() -> ModalityDecision` protocol, so the orchestrator's dispatch and every C2/C3/C4 fail-safe are unchanged. `configs/orchestrator.yaml` now registers the **gate-passed coronary seg model** (`floor_ok: true`) instead of the below-floor stenosis detector.
+
+**Honest scope limit of the gate:** it screens *acquisition plausibility* — shape, channel count, size, dynamic range, endpoint clipping. It catches corrupt files, blank/blown-out frames, colour screenshots and wrong-shaped tensors. It **cannot** tell a coronary angiogram from a chest X-ray. That half of B3 ("wrong modality") needs a learned OOD head trained on real in-distribution data and **remains open**; `assess_frame` is the seam it plugs into.
 
 - [x] Video path deleted; `kind=video` → 400 with a clear message
 - [x] float32 JSON serialization fixed (was 500 on every positive finding)
@@ -168,8 +182,11 @@ Built 2026-08-09 → 2026-08-13 across 16 planned tasks. **All modules import to
 - [x] `configs/orchestrator.yaml` stenosis path repointed to the real weights (was a nonexistent `runs/…` path)
 - [x] `/infer` default repointed to the gate-passed CoreML package
 - [x] Event bus mirrors every step (§4.3)
-- [ ] Install `timm`; train or obtain router weights (no router trainer exists — `build_router_manifest.py` has no consumer)
-- [ ] Decide: does Model One even need the modality router, or does the validity gate replace it? (B3 describes a validity gate, not a modality router)
+- [x] **Decided 2026-08-16: the validity gate replaces the modality router.** This formally closes orchestrator-plan tasks **B2** (`train_router.py`), **B3** (router notebook + GPU run) and **E2** (router CoreML export) as *dead work removed, not built* — roughly a week of planned effort deleted. `timm` is no longer needed by the serve path.
+- [x] Register a model that can actually answer — coronary seg (`floor_ok: true`), stenosis deliberately unregistered until P1.0 + the corrected-split retrain
+- [x] **Dead router surface deleted 2026-08-16:** `src/serve/router.py` (90), `tests/test_router.py` (133), `src/data_prep/build_router_manifest.py` (91), `tests/test_build_router_manifest.py` — 4 files, −26 tests. The one real-`ModalityRouter` fail-safe test was replaced by an equivalent real-`ValidityGate` test; the `RouterUnavailable` contract itself stays pinned by `UnavailableRouter` (no current gate can raise it, but the learned OOD gate will have weights). `timm` stays in `requirements.txt` — Model One B4 needs it for the frozen backbone; it is no longer touched by the serve path.
+- [ ] **Rename the stale `router` names in the published contract:** event topics `router.decided` / `router.unavailable`, defer reason `"router-unavailable"`, exception `RouterUnavailable`. Internal names were renamed to `gate` already; these four are the `/events` + `StudyReport` contract, so changing them is a deliberate versioned change, not a refactor.
+- [ ] Learned OOD head so the gate can reject *wrong-modality* inputs, not just implausible ones (needs real in-distribution data → blocked on B5)
 
 ### 4.3 Event bus `x` — new 2026-08-13
 
@@ -240,7 +257,7 @@ Plan: [`2026-08-13-model-one-classifier-scaffold.md`](superpowers/plans/2026-08-
 | `stenosis_yolo.yaml` | `f1: 0.57, recall: 0.60` | **not met** (0.291/0.271); floor itself contested |
 | `edge_export.yaml` | `cldice_drop_max: 0.03` | **met** for CoreML; static PTQ now matches the declared `method: static_ptq` |
 | `avf_fistulography.yaml` | `sensitivity: null, specificity: null` | **floors unsigned** — code treats null as "not signed off" |
-| `orchestrator.yaml` | `floor_ok: false` (stenosis) | truthful; weights path fixed 2026-08-13 |
+| `orchestrator.yaml` | `floor_ok: true` (coronary seg) | **rewritten 2026-08-16**: `validity:` gate block replaces `router:`; registers the gate-passed seg model. Stenosis deliberately unregistered (below floor) |
 | `ingest_clearance.yaml` | — | **both flags false** (the legal gate) |
 | `ingest_sites.yaml` | — | `drive_roots: []`; a test asserts it stays B5-safe |
 | `catheter_track.yaml` | **none** | no `target:` block at all |
@@ -248,7 +265,7 @@ Plan: [`2026-08-13-model-one-classifier-scaffold.md`](superpowers/plans/2026-08-
 | `tavr_ct_seg.yaml` | **none** | orphan — zero code references |
 | `avf_audio.yaml` | **none** | stub trainer only |
 | `avf_tabular.yaml` | **none** | orphan — lightgbm/xgboost installed, never imported |
-| *missing* `router.yaml` | — | referenced by `build_router_manifest.py` docstring; **does not exist** |
+| ~~`router.yaml`~~ | — | **moot 2026-08-16** — the router it configured was deleted; the gate needs no weights config |
 
 ---
 
@@ -351,7 +368,11 @@ Catalogued 2026-08-09, several still open as of this update:
 
 ## 10. Changelog — entries since the 2026-08-13 rebuild
 
-- **2026-08-16** — **CADICA split-audit hole closed + ONNX INT8 clDice gate evidenced.** (a) `audit_split_leakage()` gained a `cadica_stems=` regex-no-op tripwire, the fourth alongside `danilov_stems`/`cathaction_stems`/`avf_stems`; `cadica_to_yolo._convert` now returns the stems it wrote and `main()` audits its own output (previously **nothing audited the combined corpus** — `danilov_to_yolo.main` audits, then CADICA writes into the same tree *afterwards*, so the gate depended entirely on notebook cell ordering); `kaggle_stenosis_plug_and_play.ipynb` cell 8 now builds the CADICA stem set from raw and passes it. This closes the hole that let the 2026-07-16 run print "LEAKAGE CHECK PASSED" over a CADICA grouping it had never checked (§4.5). (b) The static-PTQ INT8 artifact was **Dice-gated only** since 2026-08-13 while `configs/edge_export.yaml` declares the HARD gate on **clDice** — measured now on the same 50 val pairs: clDice 0.9786 vs fp32 0.9783 (drop −0.0003 ≤ 0.03), Dice 0.9156 both, mask agreement 0.9996. **PASS.** Suite 621 → **626** (+5, all watched fail first).
+- **2026-08-16 (b)** — **`/analyze` serves its first real verdict; modality router replaced by the B3 validity gate.** New `src/serve/validity.py` (numpy-only, no weights, no torch): `assess_frame` screens shape / channel count / size / dynamic range / endpoint clipping, and `ValidityGate.classify` adapts it to the exact `-> ModalityDecision` protocol the orchestrator already consumed, so dispatch and every C2/C3/C4 fail-safe are byte-unchanged. A rejected frame resolves to `modality: "unknown", deferred: True`, so it can never reach a disease model. `build_orchestrator` now requires a `validity:` block and raises `KeyError` without one (fail closed at wiring time, not at first request). `configs/orchestrator.yaml` registers the gate-passed coronary seg model (`floor_ok: true`) in place of the below-floor stenosis detector. Verified live end-to-end: `POST /analyze?kind=image` → 200, `deferred: false`, confidence **0.9955**, from the real CoreML `student.mlpackage` — the first non-deferred response this endpoint has ever produced. Internal `router` names renamed to `gate` (`DiagnosticOrchestrator.gate`, `model_versions["gate"]`); the event topics, `RouterUnavailable` and the `"router-unavailable"` defer reason keep the old name for now because they are the published `/events` + report contract. **Honest limit recorded:** the gate screens acquisition plausibility, NOT imaging modality — it cannot distinguish a coronary angiogram from a chest X-ray, so B3's "wrong modality" clause stays open pending a learned OOD head on real data.
+
+  **Dead router surface then deleted** (same day, on explicit go-ahead): `src/serve/router.py`, `tests/test_router.py`, `src/data_prep/build_router_manifest.py`, `tests/test_build_router_manifest.py` — 4 files, 314 LOC, −26 tests. `configs/router.yaml` was never created, so nothing to remove there. Docstrings in `orchestrator.py`/`app.py`, the `timm` note in `requirements.txt`, and `INTENDED_USE.md`'s two code references were repointed at `validity.py`. Suite 626 → 649 (+8 validity, +7 real-stack, +2 wiring) → **623** after the deletion.
+
+- **2026-08-16 (a)** — **CADICA split-audit hole closed + ONNX INT8 clDice gate evidenced.** (a) `audit_split_leakage()` gained a `cadica_stems=` regex-no-op tripwire, the fourth alongside `danilov_stems`/`cathaction_stems`/`avf_stems`; `cadica_to_yolo._convert` now returns the stems it wrote and `main()` audits its own output (previously **nothing audited the combined corpus** — `danilov_to_yolo.main` audits, then CADICA writes into the same tree *afterwards*, so the gate depended entirely on notebook cell ordering); `kaggle_stenosis_plug_and_play.ipynb` cell 8 now builds the CADICA stem set from raw and passes it. This closes the hole that let the 2026-07-16 run print "LEAKAGE CHECK PASSED" over a CADICA grouping it had never checked (§4.5). (b) The static-PTQ INT8 artifact was **Dice-gated only** since 2026-08-13 while `configs/edge_export.yaml` declares the HARD gate on **clDice** — measured now on the same 50 val pairs: clDice 0.9786 vs fp32 0.9783 (drop −0.0003 ≤ 0.03), Dice 0.9156 both, mask agreement 0.9996. **PASS.** Suite 621 → **626** (+5, all watched fail first).
 
 > Earlier entries (2026-07-11 → 2026-08-13) are preserved in full in **Part II §8** below.
 

@@ -1,12 +1,13 @@
 """Test the diagnostic orchestrator: route -> resolve -> infer -> typed findings -> StudyReport.
 
-Router and model are both fakes/injected -- no torch import at module scope anywhere in this file,
-matching the import-safe convention the orchestrator itself follows. (One fail-safe test runs a
-REAL ModalityRouter whose lazy load is EXPECTED to fail -- torch/timm import is attempted at
-runtime there and allowed to be missing.)
+Gate and model are both fakes/injected -- no torch import at module scope anywhere in this file,
+matching the import-safe convention the orchestrator itself follows. (One test runs the REAL
+`ValidityGate`, which is numpy-only and needs no weights.)
 """
+import pytest
+
 from src.serve.registry import TaskEntry
-from src.serve.router import ModalityDecision
+from src.serve.validity import ModalityDecision, ValidityGate
 from src.serve import orchestrator as orch_mod
 from src.serve.orchestrator import DiagnosticOrchestrator
 
@@ -170,9 +171,11 @@ def test_unsupported_modality_does_not_run_model_or_audit(monkeypatch):
 # audit P3 decision: Model One screens a single still frame only. Its tests went with it.)
 
 class UnavailableRouter:
-    """Mimics ModalityRouter's fail-safe contract: classify raises RouterUnavailable when the
-    router itself (weights file / timm / torch) could not be loaded or run."""
-    weights = "runs/router/does-not-exist.pt"
+    """A decision source whose own load/run fails: classify raises RouterUnavailable. Today's
+    `ValidityGate` is numpy-only and cannot fail this way, but the contract must stay pinned --
+    any future gate with weights (e.g. the learned OOD head) can, and the orchestrator must defer
+    rather than let the exception escape as a generic analysis-error."""
+    weights = "gates/does-not-exist.pt"
 
     def classify(self, frame):
         raise orch_mod.RouterUnavailable("weights missing")
@@ -208,36 +211,55 @@ def test_analyze_frame_router_unavailable_skips_model_and_audit(monkeypatch):
     assert r.deferred is True and ran == [] and calls == []
 
 
-def test_analyze_frame_real_router_missing_weights_defers_router_unavailable():
-    # REAL ModalityRouter, no monkeypatch (the one test in this file that may touch the heavy
-    # stack at runtime -- the torch/timm import is attempted and allowed to fail): the weights
-    # file does not exist (and/or timm is not installed), so the router's own load fails.
-    # analyze_frame must return a deferred report with reason "router-unavailable" -- never let a
-    # ModuleNotFoundError/FileNotFoundError escape to the endpoint as a generic analysis-error.
-    from src.serve.router import ModalityRouter
-    router = ModalityRouter("this/path/does/not/exist.pt",
-                            ["coronary_angiography", "other_xray"])
-    orch = DiagnosticOrchestrator(router, _reg(floor_ok=True), _det_factory([]))
-    r = orch.analyze_frame(frame_gray=object())
-    assert r.deferred is True and r.defer_reason == "router-unavailable"
-    assert r.findings == []
+def test_analyze_frame_real_gate_rejects_bad_input_without_running_a_model():
+    # REAL ValidityGate, no fake: the gate is the orchestrator's live decision source, so at least
+    # one test must exercise it unmocked. A degenerate frame must defer with the gate's OWN reason
+    # and never reach the model. (This replaces the old real-ModalityRouter fail-safe test, which
+    # went with the router in 2026-08-16; the RouterUnavailable contract itself is still pinned
+    # above by UnavailableRouter, since any future gate can still fail to load.)
+    import numpy as np
+    ran = []
+
+    def factory(entry):
+        def _fail(frame):
+            ran.append(True)
+            raise AssertionError("model must not run on a frame the gate rejected")
+        return _fail
+
+    orch = DiagnosticOrchestrator(ValidityGate("coronary_angiography"), _reg(floor_ok=True), factory)
+    r = orch.analyze_frame(np.full((512, 512), 128, np.uint8))
+    assert r.deferred is True and r.defer_reason == "degenerate-contrast"
+    assert r.modality == "unknown" and r.findings == [] and ran == []
 
 
-# --- build_orchestrator: real router+registry+infer wiring (D3) ----------------------------------
+# --- build_orchestrator: real gate+registry+infer wiring (D3) -------------------------------------
 
-def test_build_orchestrator_wires_router_and_registry(tmp_path, monkeypatch):
+def test_build_orchestrator_wires_validity_gate_and_registry(tmp_path, monkeypatch):
+    # Model One is single-modality (Dialygo B3), so the decision source is a validity GATE, not a
+    # modality router: it vouches for the input or defers, it does not choose between modalities.
     cfg = tmp_path / "orch.yaml"
     cfg.write_text(
-        "router: {weights: runs/router/student.pt, labels: [coronary_angiography, other_xray],\n"
-        "         thresholds: {keep_thr: 0.6, margin: 0.15, quality_thr: 0.5}}\n"
+        "validity: {modality: coronary_angiography, accept_score: 0.5}\n"
         "modalities:\n"
-        "  coronary_angiography: {task: det, model_path: best.pt, display_name: Coronary,\n"
-        "    finding_label: coronary_stenosis, finding_display: Possible stenosis, floor_ok: false}\n")
+        "  coronary_angiography: {task: seg, model_path: student.mlpackage, display_name: Coronary,\n"
+        "    finding_label: coronary_vessels, finding_display: Vessel map, floor_ok: true}\n")
     monkeypatch.setattr(orch_mod, "_load_det", lambda p: (lambda f: {"boxes": [], "deferred": False}))
     monkeypatch.setattr(orch_mod, "_load_seg", lambda p: (lambda f: {"deferred": False, "confidence": 0.0}))
     orch = orch_mod.build_orchestrator(str(cfg))
     assert "coronary_angiography" in orch.registry
-    assert orch.router.labels == ["coronary_angiography", "other_xray"]
+    assert isinstance(orch.gate, ValidityGate)
+    assert orch.gate.modality == "coronary_angiography"
+
+
+def test_build_orchestrator_rejects_a_config_with_no_validity_block(tmp_path):
+    # Fail closed at wiring time: a config with no gate would leave every input unvouched-for.
+    cfg = tmp_path / "orch.yaml"
+    cfg.write_text(
+        "modalities:\n"
+        "  coronary_angiography: {task: seg, model_path: m, display_name: C,\n"
+        "    finding_label: v, finding_display: V, floor_ok: false}\n")
+    with pytest.raises(KeyError):
+        orch_mod.build_orchestrator(str(cfg))
 
 
 # --- model-unavailable fail-safe: missing/unloadable weights or an unknown task type must defer,

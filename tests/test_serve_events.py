@@ -11,7 +11,7 @@ import pytest
 
 from src.serve.events import EventBus, JsonlSink, RingBuffer
 from src.serve.registry import TaskEntry
-from src.serve.router import ModalityDecision
+from src.serve.validity import ModalityDecision
 from src.serve.orchestrator import DiagnosticOrchestrator
 
 
