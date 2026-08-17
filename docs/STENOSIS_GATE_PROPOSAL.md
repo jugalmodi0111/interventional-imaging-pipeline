@@ -6,6 +6,16 @@
 
 ---
 
+> **SUPERSEDED IN PART, 2026-08-16.** Specificity has since been measured and it is ~nil: the
+> models flag 90–100% of non-lesion clips, Youden J is negative at every threshold for the retrained
+> weights, and per-video PPV falls **below the base rate**. The sensitivity 0.902 quoted below was
+> largely an artifact of a trigger-happy detector — the same behaviour that produced the ~1.0
+> false-flag rate. **The reframe in §1 still stands; the claim that the model is close to supporting
+> it does not.** The §3 tables remain valid as the specificity-vs-PPV arithmetic. See
+> `experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e80_augtuned/RESULTS.md`.
+>
+> **Dr. Reddy was given 0.902 before specificity existed. That needs correcting with him.**
+
 ## 1. Where this stands
 
 The question "is per-frame F1 the right gate?" has been open since 2026-07-17. It is now answered

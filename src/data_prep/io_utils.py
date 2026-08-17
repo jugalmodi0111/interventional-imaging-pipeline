@@ -322,8 +322,29 @@ def _audit_group(stem):
     return group_key(stem)
 
 
+def _split_backgrounds(out_dir, split):
+    """(n_images, n_background) for a YOLO split. A BACKGROUND is an image whose label file is
+    missing or holds no boxes — exactly what ultralytics counts and prints as "N backgrounds".
+
+    Deliberately matches ultralytics' definition, *missing file included*: an accidentally-dropped
+    label silently becomes a negative example there, so it must be visible as one here too.
+    """
+    stems = _split_stems(out_dir, split)
+    ldir = os.path.join(out_dir, "labels", split)
+    bg = 0
+    for s in stems:
+        lp = os.path.join(ldir, s + ".txt")
+        if not os.path.isfile(lp):
+            bg += 1
+            continue
+        with open(lp, errors="replace") as f:
+            if not any(ln.strip() for ln in f):
+                bg += 1
+    return len(stems), bg
+
+
 def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5, cathaction_stems=None,
-                         avf_stems=None, cadica_stems=None):
+                         avf_stems=None, cadica_stems=None, require_backgrounds=False):
     """Post-conversion honesty gate for a YOLO train/val split. Returns a report dict;
     RAISES AssertionError the moment the split could leak. Call it AFTER conversion and
     BEFORE training so a leaked run can never silently report an inflated metric.
@@ -462,8 +483,25 @@ def audit_split_leakage(out_dir, danilov_stems=None, max_ungrouped_frac=0.5, cat
             f"group_key()/_CADICA_RE before trusting any F1. Example ungrouped: "
             f"{sorted(ungrouped)[:5]}")
 
+    # (3) BACKGROUND (negative) accounting. Added 2026-08-16 after the architecture audit found the
+    #     stenosis corpus contained ZERO label-less images: every frame carried >=1 box, so the
+    #     detector was never shown what "no lesion" looks like and learned to always fire (per-video
+    #     false-flag rate ~1.0, negative Youden J). This auditor could not have caught it — it read
+    #     images/ and never labels/ — which is precisely why the check belongs HERE, at conversion
+    #     time, rather than being discovered from a GPU run's metrics weeks later.
+    ntr, btr = _split_backgrounds(out_dir, "train")
+    nva, bva = _split_backgrounds(out_dir, "val")
+    bg_frac = round((btr + bva) / max(1, ntr + nva), 3)
+    assert not (require_backgrounds and (btr + bva) == 0), (
+        f"NO BACKGROUND IMAGES: all {ntr + nva} images in the split carry at least one box, so the "
+        f"detector will never see a negative example and cannot learn not to fire. This is the "
+        f"2026-08-16 root cause (see docs/STENOSIS_ARCHITECTURE_AUDIT.md A1). Sample frames from "
+        f"lesion-free sources — for CADICA, whole videos listed in nonlesionVideos.txt — and write "
+        f"them with EMPTY label files. Ultralytics' own guidance is 0-10% background images.")
+
     return {"train_imgs": len(train), "val_imgs": len(val),
             "train_groups": len(gtrain), "val_groups": len(gval),
             "val_frac_by_group": round(len(gval) / max(1, len(gtrain) + len(gval)), 3),
+            "train_backgrounds": btr, "val_backgrounds": bva, "background_frac": bg_frac,
             "danilov": danilov_report, "cathaction": cathaction_report, "avf": avf_report,
             "cadica": cadica_report}

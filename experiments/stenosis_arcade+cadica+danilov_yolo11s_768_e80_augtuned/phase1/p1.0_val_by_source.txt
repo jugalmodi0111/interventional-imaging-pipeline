@@ -1,0 +1,4 @@
+per-source val (P=precision R=recall; low conf 0.001 so recall is not throttled)
+arcade   n=  207  P 0.279  R 0.293  mAP50 0.188  mAP50-95 0.076
+cadica   n=  553  P 0.266  R 0.304  mAP50 0.192  mAP50-95 0.059
+danilov  n=   40  P 0.404  R 0.300  mAP50 0.210  mAP50-95 0.056

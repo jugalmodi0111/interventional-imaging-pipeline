@@ -244,3 +244,56 @@ def test_no_collision_when_basenames_are_unique(tmp_path):
     _coco(os.path.join(tmp_path, "train", "a.json"), ["1.png", "2.png"])
     _coco(os.path.join(tmp_path, "val", "a.json"), ["3.png", "4.png"])
     assert duplicate_basenames_across_cocos(str(tmp_path)) == {}
+
+
+# --- B3: background (negative) accounting -------------------------------------------------------
+# The 2026-08-16 architecture audit found the stenosis corpus had ZERO negative frames: every image
+# carried >=1 box, so the detector was never shown what "no stenosis" looks like. The auditor could
+# not have caught it -- _split_stems reads images/ only and never looks at labels/. These pin the
+# fix: the report must count label-less images, and a corpus with none must not pass silently.
+
+def _write_split_with_labels(root, train, val):
+    """train/val are {stem: n_boxes}; n_boxes == 0 writes an EMPTY label file (a background image)."""
+    for split, spec in (("train", train), ("val", val)):
+        for sub in ("images", "labels"):
+            os.makedirs(os.path.join(root, sub, split), exist_ok=True)
+        for stem, n in spec.items():
+            open(os.path.join(root, "images", split, stem + ".png"), "w").close()
+            with open(os.path.join(root, "labels", split, stem + ".txt"), "w") as f:
+                f.write("\n".join("0 0.5 0.5 0.1 0.1" for _ in range(n)))
+    return root
+
+
+def test_report_counts_background_images_per_split(tmp_path):
+    out = _write_split_with_labels(str(tmp_path),
+                                   train={"p1_v1_00001": 1, "p1_v1_00002": 0, "p1_v1_00003": 0},
+                                   val={"p2_v1_00001": 1, "p2_v1_00002": 0})
+    rep = audit_split_leakage(out, require_backgrounds=False)
+    assert rep["train_backgrounds"] == 2 and rep["val_backgrounds"] == 1
+    assert rep["background_frac"] == round(3 / 5, 3)
+
+
+def test_all_positive_corpus_raises_when_backgrounds_required(tmp_path):
+    # The exact 2026-08-16 condition: every image has a box. Ultralytics reports "0 backgrounds".
+    out = _write_split_with_labels(str(tmp_path),
+                                   train={"p1_v1_00001": 1, "p1_v1_00002": 2},
+                                   val={"p2_v1_00001": 1})
+    with pytest.raises(AssertionError, match="NO BACKGROUND"):
+        audit_split_leakage(out, require_backgrounds=True)
+
+
+def test_backgrounds_present_passes_the_requirement(tmp_path):
+    out = _write_split_with_labels(str(tmp_path),
+                                   train={"p1_v1_00001": 1, "p1_v1_00002": 0},
+                                   val={"p2_v1_00001": 1, "p2_v1_00002": 0})
+    rep = audit_split_leakage(out, require_backgrounds=True)
+    assert rep["background_frac"] > 0
+
+
+def test_missing_label_file_is_counted_as_background_not_ignored(tmp_path):
+    # A missing label file is what ultralytics treats as background, so the auditor must agree --
+    # otherwise an accidentally-dropped label silently becomes a negative nobody accounted for.
+    out = _write_split_with_labels(str(tmp_path), train={"p1_v1_00001": 1}, val={"p2_v1_00001": 1})
+    open(os.path.join(out, "images", "train", "p1_v1_00009.png"), "w").close()   # no label written
+    rep = audit_split_leakage(out, require_backgrounds=False)
+    assert rep["train_backgrounds"] == 1
