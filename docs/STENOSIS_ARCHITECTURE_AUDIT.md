@@ -86,6 +86,26 @@ thrown away rather than becoming the background example it should be. If SSL wer
 disjoint `ssl.unlabeled_dir` attached, guard verified firing in both runs), so this is latent, not
 active.
 
+## A2b — HIGH: a THIRD instance of the same defect, in the Grounding-DINO seed round
+
+Found while implementing the A2 fix. `_gdino_seed_round` carried the identical line:
+
+```python
+lines = boxes_labels_to_yolo_lines(boxes, labels, class_map, W, H)
+if not lines:
+    continue          # GD found nothing -> frame discarded instead of becoming a background
+```
+
+So the open-vocab cold start re-created exactly the all-positive corpus that A1/A2 remove. Three
+independent code paths (`cadica_to_yolo._iter_frames`, `_pseudo_label_round`, `_gdino_seed_round`)
+each independently encoded the same wrong assumption: *a frame is only worth keeping if something
+was found in it*. That is the actual root pattern behind A1 — not a single typo, a shared mental
+model. Fixing two of three would have let the corpus silently regress the moment the seed path ran.
+
+**Fixed 2026-08-16** with the same shape as A2: zero-detection frames become backgrounds (image +
+empty label), sharing `ssl.max_background_frac` so a cold start that fires on almost nothing cannot
+flood the train split. Frame order sorted for determinism. 4 tests.
+
 ## A3 — MEDIUM: the SSL round retrains from COCO weights, not the current model
 
 Same function: `model = YOLO(_detector(cfg)["name"] + ".pt")` re-initialises from the stock
@@ -226,3 +246,105 @@ without evaluating both harmonized and original val.
 4. **B1 / B2** — dimension cross-check and a dropped-image record in the converters.
 5. **B4** — make the ARCADE stem independent of which jsons are attached.
 6. **A4 / B5** — decision rule and harmonization, both only after A1.
+
+
+---
+
+# Implementation status — verified 2026-08-16 (suite 702 passed)
+
+Each item below was checked against the code, not against the implementer's report. A1 was
+additionally re-verified with an independent adversarial fixture that reused none of its tests.
+
+| ID | Severity | Status |
+|---|---|---|
+| **A1** zero negative frames | CRITICAL | **FIXED** — `cadica_to_yolo` negative sampling, 38 tests |
+| **A2** SSL pseudo-label discards negatives | HIGH | **FIXED** — empty labels + `max_background_frac`, 17 tests |
+| **A2b** GD seed round, third instance | HIGH | **FIXED** — same shape, 4 tests |
+| **B3** auditor blind to labels | HIGH | **FIXED** — `require_backgrounds` + background counts, 4 tests |
+| **A3** SSL retrains from COCO weights | MEDIUM | **FIXED** — `ssl.restart_from` knob, default unchanged, 20 tests |
+| A4 per-video decision rule | — | open (deliberately: downstream of A1) |
+| **B1** COCO metadata dimensions untrusted | MEDIUM | **FIXED** — corroborated against the file, fails closed |
+| **B2** converters drop images silently | MEDIUM | **FIXED** — `convert_errors.jsonl`, ingest convention |
+| **B4** ARCADE stems unstable across configs | MEDIUM | **FIXED** — tag iff `group_key(stem) == stem` |
+| **B5** harmonize train/eval mismatch | MEDIUM | **FIXED** — warning + honest docstring, math untouched |
+
+## Independent verification of A1 (the one that could destroy recall)
+
+Built a fixture with lesion videos carrying GT on only 2 of 10 frames — the real CADICA shape, and
+the exact trap: the other 8 frames still contain the lesion.
+
+| check | result |
+|---|---|
+| negatives sourced from a LESION video | **none** — 0 of 4 |
+| negative label files genuinely 0 bytes | pass |
+| a patient's negatives and positives on the same split side | pass, 0 straddling |
+| negatives spread across patients | pass, drawn from 3 of 3 |
+
+Labelling is stricter than specified: a video the manifests list in *neither* file is `unknown` and
+**fails closed** — never sampled — instead of falling back to the weaker groundtruth-presence rule.
+Module-level imports remain stdlib-only (`argparse, glob, os, re, yaml`); no cv2/torch/numpy.
+`negatives_per_positive: 0` reproduces the pre-fix behaviour exactly.
+
+## Open judgement call: the shipped ratio is above guidance
+
+`negatives_per_positive: 1.0` on the real corpus:
+
+| ratio | negatives | corpus | background frac |
+|---|---|---|---|
+| 0.00 | 0 | 3409 | 0.0% |
+| **0.25** | 397 | 3806 | **10.4%** |
+| 0.50 | 794 | 4203 | 18.9% |
+| **1.00** | 1589 | 4998 | **31.8%** |
+
+Ultralytics guidance is 0–10%; the shipped default is **~3× that ceiling**. Defensible given a
+false-flag rate of ~1.0, but recall is the clinically costly axis and the model already misses ~75%
+of lesions, so over-dosing background is a real risk in the dangerous direction.
+
+**This should be swept, not assumed.** Train at 0.25 and at 1.0, then score both in a single
+per-video pass (the P1.1b/c cell already scores multiple weight sets) and compare operating tables.
+Do not pick by per-frame F1.
+
+
+---
+
+# Round 3 — remaining findings closed, verified 2026-08-16 (suite 768 passed)
+
+Every finding in this audit is now fixed except A4, which is deliberately deferred. Verification
+below was done independently of the implementers' own tests.
+
+## B4 adversarial re-check (the one that could reintroduce the F1 0.885 leak)
+
+The obvious fix — always prefix the split tag — would have destroyed `group_key`'s sequence collapse
+and produced a per-frame split, i.e. the exact 2026-07 leak. The implemented rule is **tag iff
+`group_key(stem) == stem`**. Re-verified with a script reusing none of the shipped tests:
+
+| check | result |
+|---|---|
+| Danilov / CADICA / CathAction / AVF stems left untagged, collapse intact | PASS (4/4) |
+| 40 frames of one sequence still land on ONE split side | PASS (Danilov → val, CADICA → train) |
+| ARCADE bare stem identical with train-only vs all-three jsons attached | PASS (`train_1` both ways) |
+| tagging never FABRICATES a group | PASS |
+
+That last row is a failure mode found by the implementer beyond the brief: json folder `14` +
+image `002_5_0016.png` would naively tag to `14_002_5_0016`, which `group_key` reads as the
+**fabricated patient `14_002`** — inventing a sequence that does not exist. Tagging is refused there.
+
+**Known discontinuity:** B4 moves some ARCADE images between train and val. Metrics from a corpus
+built after this change are NOT comparable to the 2026-08-16 numbers unless both sides are rebuilt.
+
+## B1 / B2 spot-checks
+
+`dim_mismatch` rows carry BOTH coordinate systems (`declared 512x512 vs actual 1024x1024`) rather
+than silently preferring one. A corrupt image in the Danilov native path is converted-count 1,
+drop-count 1, reason `unreadable`, persisted to `convert_errors.jsonl`. A torn/garbage append costs
+one row and does not raise, matching `src/ingest/manifest.read_jsonl`'s degrade-don't-raise rule.
+
+B1 also closed a latent crash found in passing: an undecodable file previously reached
+`clahe_unsharp(None)` and raised `AttributeError` mid-conversion; it is now an `unreadable` drop.
+
+## Still open — by design
+
+**A4, the per-video decision rule.** "Flag if the detector fires anywhere in the clip" maximally
+amplifies per-frame false positives. It stays open deliberately: it is downstream of A1, and tuning
+aggregation is only meaningful once the retrain shows what a model that has actually seen negatives
+does. Revisit with the operating table, not before.

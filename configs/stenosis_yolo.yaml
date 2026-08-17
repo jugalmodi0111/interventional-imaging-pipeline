@@ -2,14 +2,49 @@ task: stenosis_detection
 datasets:
   arcade_stenosis: {root: data/raw/arcade/stenosis, task: 2, format: coco}   # stenosis split only
   danilov:         {root: data/raw/danilov, format: coco, max_frames_per_patient: 5}   # cap 5/patient: 64 patients/8325 frames dilute the honest metric (arcade-only 0.246 > +danilov 0.214)
-  cadica:          {root: data/raw/cadica, format: native, max_frames_per_patient: 40}   # 2024 patient-diverse lesion angiography; run cadica_to_yolo prep to include (patients > frames). cap 40/patient: 3996 keyframes over ~42 patients are near-duplicates -> cap cuts redundancy + val-fraction variance
+  cadica:          {root: data/raw/cadica, format: native, max_frames_per_patient: 40, negatives_per_positive: 1.0}   # 2024 patient-diverse lesion angiography; run cadica_to_yolo prep to include (patients > frames). cap 40/patient: 3996 keyframes over ~42 patients are near-duplicates -> cap cuts redundancy + val-fraction variance
+  # negatives_per_positive 1.0 (0 = off, the pre-2026-08-16 behaviour): sample that many BACKGROUND
+  # frames per CADICA positive written, drawn from CADICA's NON-LESION videos ONLY (per-patient
+  # lesionVideos.txt/nonlesionVideos.txt; an unannotated frame inside a LESION video is NOT a
+  # negative -- the lesion is there, CADICA just annotates keyframes -- and feeding those in would
+  # destroy recall). Each is written with an EMPTY label file, which is what ultralytics counts as a
+  # background. Before this, the corpus had 0% background images -- ultralytics printed
+  # "0 backgrounds" on every scan -- so the detector never saw a lesion-free frame and learned to
+  # always fire (per-video false-flag rate ~1.0, negative Youden J; docs/STENOSIS_ARCHITECTURE_AUDIT
+  # .md A1). ~400 non-lesion CADICA videos (~40-120k frames) were sitting unused.
+  # SIZING, honestly: ultralytics' own guidance is ~0-10% background images to suppress false
+  # positives. CADICA is roughly half the pooled 3409-image corpus, so 1.0 puts the WHOLE corpus
+  # near 30% background -- deliberately well ABOVE that guidance, because the corpus is coming from
+  # 0% and the failure being corrected is total (specificity 0.00-0.25). Treat 1.0 as the first
+  # value to sweep, not a tuned one: the conversion line prints the achieved background_frac, and
+  # the right setting is whatever the P1.1b/c per-video sensitivity/specificity table says. Lower it
+  # if per-video sensitivity drops -- a missed stenosis is the deadly error.
 model: {name: yolo11s, imgsz: 768, pretrained: true}          # 's' + 768: cross the F1 floor (nano/640 sat at 0.25). Still edge-deployable.
 # P2.3 model/resolution sweep (edit the line above, then `yolo_to_coreml --smoketest` the result on Mac):
 # model: {name: yolo11m, imgsz: 768, pretrained: true}        # ~2x latency/size vs 's'; still ANE-viable. Data-limited -> expect small gains.
 # model: {name: yolo11s, imgsz: 1024, pretrained: true}       # higher res helps the smallest lesions' recall; latency ~quadratic -> bench on device.
 # model.pretrained_weights: runs/ssl/xca_backbone.pt          # SSL/angiography-pretrained backbone drop-in (produce GPU-side; loaded strict=False before train)
 # if T4 OOMs at 768/batch16: drop train.batch to 8 (or set -1 for auto).
-ssl:   {pseudo_label: true, conf: 0.4}                        # semi-supervised boost (P2.2: the confirmed data lever)
+ssl:   {pseudo_label: true, conf: 0.4, max_background_frac: 0.5,
+        restart_from: pretrained}   # semi-supervised boost (P2.2: the confirmed data lever)
+# restart_from (DEFAULT 'pretrained' = the behaviour every run so far): WHICH checkpoint an SSL round
+# retrains from, in both the pseudo-label and the Grounding-DINO seed round.
+#   pretrained -> re-init from the stock <model.name>.pt. The round learns only from the
+#                 pseudo-labels, so the model can't reinforce its own errors through its own weights
+#                 (confirmation-bias guard) -- but it DISCARDS everything the base run learned except
+#                 what survived into the labels, and pays for a full cold retrain each round.
+#   current    -> continue from the weights that just produced the pseudo-labels. Keeps that
+#                 learning and converges faster, at the risk of entrenching its own pseudo-label
+#                 mistakes -- sharpest here, where an over-firing detector relabels its own false
+#                 positives as ground truth (docs/STENOSIS_ARCHITECTURE_AUDIT.md A3).
+# Anything else raises (it is never silently ignored). Sweep it like max_background_frac, don't assume.
+# max_background_frac (DEFAULT 0.5): an unlabeled frame the detector fires NOTHING on is written as a
+# BACKGROUND (image + EMPTY label file = a negative to ultralytics), not discarded. Discarding them is
+# what left the corpus at 0% negatives, so the detector flags ~100% of lesion-free clips; ultralytics'
+# own guidance is 0-10% background images. The cap keeps backgrounds to at most this fraction of the
+# frames a round adds, so a detector that fires on nothing can't flood images/train with pure
+# background (0 positives -> 0 backgrounds). 0.0 = off (the old positives-only round); >=1.0 = uncapped.
+# Which frames survive the cap is deterministic (sorted + evenly spaced, no RNG).
 # ssl.unlabeled_dir MUST point at a DISJOINT unlabeled set (no val patients) or SSL stays OFF — the
 # notebook auto-sets it to data/raw/xcad when an XCAD dataset is attached. XCAD (~1621 frames) is a
 # separate cohort from ARCADE/CADICA/Danilov, so it's disjoint by construction (safe to self-train on).
@@ -38,8 +73,10 @@ augment:
   dfl: 2.0               # was 1.5
 # P2.1 box-size harmonization: clamp tiny boxes up to a min w/h floor (fixes the source convention
 # mismatch the §3c annotation QA shows — danilov boxes ~4x smaller than arcade, tiny_frac 0.36).
-# min_box_wh 0 = OFF (default; keeps the baseline). Set ~0.04 (~30px at 768) to enable. TRAIN-ONLY by
-# default so val stays comparable to the un-harmonized baseline.
+# min_box_wh 0 = OFF (default; keeps the baseline). Set ~0.04 (~30px at 768) to enable.
+# TRADE-OFF (audit B5): TRAIN-ONLY keeps val comparable to the baseline but trains the model to emit
+# boxes LARGER than the un-harmonized val target, which can LOWER mAP50 and hits mAP50-95 harder. If
+# you enable it, score the same weights on BOTH the original and a harmonized val ([train, val]).
 harmonize: {min_box_wh: 0.0, splits: [train]}
 metrics: [coco_ap, f1]
 val:    {conf: 0.001}                                         # low eval conf so recall (the costly axis) isn't throttled; add val.iou to override NMS IoU

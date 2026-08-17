@@ -33,13 +33,19 @@ def _voc_box(obj, W, H):
     return f"0 {((x1 + x2) / 2) / W:.6f} {((y1 + y2) / 2) / H:.6f} {(x2 - x1) / W:.6f} {(y2 - y1) / H:.6f}"
 
 
-def _danilov_native(root, out_dir, size, max_frames_per_patient=None):
+def _danilov_native(root, out_dir, size, max_frames_per_patient=None, drops=None):
     """Danilov (Mendeley ydrm75xywg) ships boxes as Pascal-VOC XML or YOLO .txt. Map all
     severity classes (small/medium/large) -> single 'stenosis' class 0. Returns count.
 
     ``max_frames_per_patient`` (None = keep all) caps each patient (``group_key`` = ``<site>_<patient>``)
     to at most that many EVENLY-SPACED frames, so the ~8325 near-duplicate frames from 64 patients
-    can't dilute the honest per-patient metric. Only the retained frames are written."""
+    can't dilute the honest per-patient metric. Only the retained frames are written.
+
+    Audit B2: a frame whose image cannot be found (``image_unresolved``) or cannot be decoded
+    (``unreadable``) is recorded in ``<out_dir>/convert_errors.jsonl`` and, when ``drops`` is
+    passed, appended to that list — it used to vanish on a bare ``continue``, leaving a
+    silently-incomplete corpus that looked identical to a complete one. Frames removed by
+    ``max_frames_per_patient`` are NOT drops: that discard is deliberate and reproducible."""
     n = 0
     imgidx = _index_images(root)   # build once; O(1) lookups below
     allowed = None
@@ -55,12 +61,14 @@ def _danilov_native(root, out_dir, size, max_frames_per_patient=None):
         ip = (imgidx.get(os.path.basename(fn)) if fn else None) or \
              imgidx.get(os.path.splitext(os.path.basename(xp))[0])
         if not ip:
+            io.record_drop(out_dir, fn or xp, "image_unresolved", drops=drops, annotation=xp)
             continue
         stem = os.path.splitext(os.path.basename(ip))[0]
         if allowed is not None and stem not in allowed:
-            continue
+            continue                              # deliberate per-patient cap, not a drop
         g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
         if g is None:
+            io.record_drop(out_dir, ip, "unreadable", drops=drops, annotation=xp)
             continue
         H, W = g.shape
         lines = [_voc_box(o, W, H) for o in t.findall("object") if o.find("bndbox") is not None]
@@ -79,11 +87,13 @@ def _danilov_native(root, out_dir, size, max_frames_per_patient=None):
         stem = os.path.splitext(os.path.basename(tp))[0]
         ip = imgidx.get(stem)
         if not ip:
+            io.record_drop(out_dir, tp, "image_unresolved", drops=drops, stem=stem)
             continue
         if allowed is not None and stem not in allowed:
-            continue
+            continue                              # deliberate per-patient cap, not a drop
         g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
         if g is None:
+            io.record_drop(out_dir, ip, "unreadable", drops=drops, annotation=tp)
             continue
         lines = [("0 " + " ".join(ln.split()[1:])) for ln in open(tp) if ln.strip()]
         sp = io.split_of(stem)
@@ -116,13 +126,31 @@ def main(cfg):
         dupes = io.duplicate_basenames_across_cocos(d["root"])       # ARCADE renumbers per split
         if dupes:
             print(f"[info] {key}: {len(dupes)} basenames repeat across COCO splits "
-                  f"-> disambiguated by split prefix in coco_to_yolo (no data loss). "
-                  f"e.g. {list(dupes)[:5]}")
-        c = io.coco_to_yolo(d["root"], OUT, size=size, class_id=0)   # COCO path (both if present)
+                  f"-> split-tagged in coco_to_yolo (no data loss). e.g. {list(dupes)[:5]}")
+            # ...with ONE exception, which the operator has to see. Since the B4 fix a stem that
+            # carries sequence identity (Danilov/CADICA/CathAction/AVF) is never tagged, because a
+            # prefix defeats group_key and splits that patient per-frame (the F1 0.885 -> 0.214
+            # leak). Such a collision therefore CANNOT be disambiguated and still clobbers.
+            unresolvable = sorted(bn for bn in dupes
+                                  if io.group_key(os.path.splitext(bn)[0]) != os.path.splitext(bn)[0])
+            if unresolvable:
+                print(f"[WARN] {key}: {len(unresolvable)} of those are SEQUENCE stems that must "
+                      f"stay collapsible by group_key and so CANNOT be split-tagged — they collide "
+                      f"LAST-WRITE-WINS (real data loss). Rename them at the source before "
+                      f"trusting the counts. e.g. {unresolvable[:5]}")
+        dropped = []                                                 # audit B2: nothing silent
+        c = io.coco_to_yolo(d["root"], OUT, size=size, class_id=0,    # COCO path (both if present)
+                            drops=dropped)
         if c == 0 and key == "danilov":
             # max_frames_per_patient (cfg default None) caps redundant per-patient frames.
-            c = _danilov_native(d["root"], OUT, size, d.get("max_frames_per_patient"))
-        print(f"{key}: {c} images")
+            c = _danilov_native(d["root"], OUT, size, d.get("max_frames_per_patient"),
+                                drops=dropped)
+        # Print the drop count ALWAYS, zero included: the point of the record is that two runs can
+        # be diffed, and "0 dropped" is the line whose change is the signal.
+        msg = f"{key}: {c} images ; {len(dropped)} dropped"
+        if dropped:
+            msg += f" {io.drop_reason_counts(dropped)} -> {io.convert_errors_path(OUT)}"
+        print(msg)
         total += c
     if total == 0:
         raise SystemExit(f"No stenosis boxes converted. Check {[ds[k]['root'] for k in ds]}.")

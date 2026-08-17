@@ -6,9 +6,19 @@ can't learn a consistent target size from mixed conventions, which caps the IoU-
 (mAP50 0.209 vs mAP50-95 0.080). Clamping sub-floor boxes up to a minimum w/h gives one consistent
 minimum target WITHOUT dropping any positive (recall-preserving), unlike simply deleting tiny boxes.
 
-Default is TRAIN-ONLY (`splits=("train",)`): the model learns the harmonized size, but val is scored
-against the ORIGINAL boxes so the metric stays comparable to the un-harmonized baseline. Pass
-`splits=("train","val")` only if you deliberately want to move the eval target too.
+TRAIN-ONLY IS NOT FREE (audit B5). The default `splits=("train",)` keeps val scored against the
+ORIGINAL boxes, so the *metric* stays comparable to the un-harmonized baseline — but the *model* is
+then trained to emit boxes systematically LARGER than the evaluation target. At IoU 0.5 an
+over-sized prediction loses IoU against a small GT box, so train-only harmonization can LOWER mAP50
+and will hit mAP50-95 harder still, even when it genuinely fixes the source convention mismatch. A
+drop therefore does NOT mean the convention fix was wrong, and a rise is not clean evidence it was
+right: the lever's effect is confounded with the train/eval target mismatch it introduces.
+
+So before trusting any number from this lever, score the SAME weights on BOTH the original val and a
+harmonized val (`splits=("train","val")`); only then is the mAP change attributable to the
+harmonization rather than to the moved target. `harmonization_warning()` states this at runtime the
+moment the lever is switched on. `splits=("train","val")` moves the eval target and removes the
+mismatch — that is a different, also-legitimate choice, not a safer one.
 
 Pure stdlib (os/glob/argparse) — no cv2/torch. It only rewrites the YOLO .txt label files in place.
 """
@@ -68,13 +78,59 @@ def harmonize_label_lines(lines, min_wh):
     return out, changed
 
 
+def harmonization_warning(min_box_wh, splits=("train",)):
+    """Return the train/eval mismatch warning text for this setting, or None if there is none. Pure.
+
+    A mismatch exists exactly when ONE of train/val is harmonized and the other is not: the model's
+    predicted box-size distribution then no longer matches the distribution it is scored against.
+    Returns None when the lever is off (min_box_wh <= 0) and when train and val move together."""
+    try:
+        m = float(min_box_wh or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if m <= 0:
+        return None
+    s = {str(x).strip().lower() for x in (splits or ())}
+    if ("train" in s) == ("val" in s):
+        return None            # both harmonized (targets agree) or neither (nothing was clamped)
+    shown = list(splits or ())
+    if "train" in s:
+        return (
+            f"[harmonize] WARNING: min_box_wh={m} clamps the TRAIN split only (splits={shown}).\n"
+            "  The MODEL will learn to emit boxes at least this wide/tall, but val is still scored\n"
+            "  against the ORIGINAL (smaller) boxes -- so predictions become systematically LARGER\n"
+            "  than the evaluation target. An over-sized prediction loses IoU against a small GT\n"
+            "  box, so this lever can LOWER mAP50 and will hit mAP50-95 harder still, even when it\n"
+            "  genuinely fixes the source annotation-convention mismatch. Keeping val un-harmonized\n"
+            "  makes the metric COMPARABLE to the baseline; it does not make it a FAIR test of the\n"
+            "  lever -- the effect is confounded with the train/eval target mismatch.\n"
+            "  RECOMMENDED: score the SAME weights on BOTH the ORIGINAL val and a HARMONIZED val\n"
+            "  (harmonize.splits: [train, val]) and report the pair. Only then is a change in\n"
+            "  mAP50 / mAP50-95 attributable to the harmonization rather than to the moved target."
+        )
+    return (
+        f"[harmonize] WARNING: min_box_wh={m} clamps the VAL split only (splits={shown}).\n"
+        "  The evaluation target moved but the model was trained on the ORIGINAL box sizes, so its\n"
+        "  predictions are systematically SMALLER than the val boxes they are matched against, and\n"
+        "  mAP50 / mAP50-95 will move for a reason unrelated to model quality. Harmonize train too\n"
+        "  (harmonize.splits: [train, val]) or neither, and score BOTH the ORIGINAL and HARMONIZED\n"
+        "  val with the same weights so the effect is attributable rather than confounded."
+    )
+
+
 def harmonize_labels(proc=OUT, min_wh=0.0, splits=("train",)):
     """Rewrite YOLO labels under proc/labels/<split>, clamping boxes to min_wh. min_wh<=0 -> no-op.
 
-    Returns {"files": n_files_seen, "boxes_clamped": total}. Default TRAIN-ONLY (keeps val honest)."""
+    Returns {"files": n_files_seen, "boxes_clamped": total}. Default TRAIN-ONLY, which leaves val
+    scored against the ORIGINAL boxes: comparable to the baseline, but it trains the model to emit
+    boxes LARGER than the eval target and so can LOWER mAP50 / mAP50-95 (see module docstring and
+    audit B5). Prints `harmonization_warning()` when that mismatch is live."""
     rep = {"files": 0, "boxes_clamped": 0}
     if not min_wh or min_wh <= 0:
         return rep
+    warn = harmonization_warning(min_wh, splits)
+    if warn:
+        print(warn)
     for sp in splits:
         for lp in sorted(glob.glob(os.path.join(proc, "labels", sp, "*.txt"))):
             rep["files"] += 1

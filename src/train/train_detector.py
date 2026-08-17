@@ -28,6 +28,104 @@ def ssl_seed(cfg):
     return cfg.get("ssl", {}).get("seed")
 
 
+def ssl_max_background_frac(cfg):
+    """Cap on how much of a pseudo-label round may be BACKGROUND frames (cfg['ssl']
+    ['max_background_frac'], DEFAULT 0.5 = at most half the frames added in the round).
+
+    A pseudo-label round writes the frames the detector fired on as positives and the frames it
+    fired on NOTHING as backgrounds (empty label files — see `_pseudo_label_round`). Backgrounds are
+    the whole point, but they need a ceiling: a weak/mis-thresholded detector fires on almost nothing,
+    so uncapped it would dump thousands of pure-background images into images/train and collapse
+    training. 0.5 keeps the round at most half negative; 0.0 turns backgrounds off; >=1.0 uncaps.
+    PURE (config-only), torch-free."""
+    frac = (cfg.get("ssl") or {}).get("max_background_frac")
+    return 0.5 if frac is None else float(frac)
+
+
+def cap_background_frames(paths, n_pos, frac=0.5):
+    """Which zero-detection frames survive the background cap, as a sorted list.
+
+    Keeps at most B backgrounds alongside `n_pos` positives, where B is the largest count with
+    B / (n_pos + B) <= `frac` — i.e. backgrounds never exceed `frac` of the frames the round adds.
+    n_pos == 0 therefore keeps NOTHING: a detector that fires on nothing cannot flood the train split
+    with pure background. frac >= 1 -> uncapped, frac <= 0 -> off.
+
+    Which ones survive is chosen EVENLY SPACED across the sorted candidates (both endpoints included),
+    mirroring io_utils.cap_frames_per_patient: fully deterministic, no RNG (repo convention for data
+    paths), and spanning the unlabeled set instead of biasing to whatever it globbed first."""
+    paths = sorted(paths)
+    m = len(paths)
+    if frac >= 1.0:
+        return paths
+    if frac <= 0.0 or n_pos <= 0 or m == 0:
+        return []
+    k = int(n_pos * frac / (1.0 - frac) + 1e-9)              # eps: 3*0.25/0.75 is 0.999... in binary
+    if k <= 0:
+        return []
+    if k >= m:
+        return paths
+    idxs = [m // 2] if k == 1 else [round(i * (m - 1) / (k - 1)) for i in range(k)]
+    kept, seen = [], set()
+    for j in idxs:                                           # dedupe defensively (distinct for k<=m)
+        if j not in seen:
+            seen.add(j)
+            kept.append(paths[j])
+    return sorted(kept)
+
+
+SSL_RESTART_MODES = ("pretrained", "current")
+
+
+def ssl_restart_from(cfg):
+    """Which checkpoint an SSL round retrains FROM: cfg['ssl']['restart_from'], DEFAULT 'pretrained'.
+
+    THE TRADE-OFF (docs/STENOSIS_ARCHITECTURE_AUDIT.md A3), previously implicit in the code:
+
+    - 'pretrained' (DEFAULT, the historical behaviour): re-initialise the round from the stock
+      `<model.name>.pt` COCO checkpoint. The round learns the task ONLY from the pseudo-labels, so
+      the model cannot reinforce its own errors through its own weights — a confirmation-bias guard.
+      The cost is real: it THROWS AWAY everything the base run learned except what survived into the
+      pseudo-labels, and pays for a full cold retrain every round.
+    - 'current': continue from the weights that just produced the pseudo-labels. Keeps the base run's
+      learning (and converges faster), at the risk of the model entrenching its own pseudo-label
+      mistakes — the classic self-training failure mode, and worse here because a detector that
+      over-fires labels its own false positives as ground truth.
+
+    An unrecognised value raises ValueError listing the valid options: a typo'd knob must fail loudly,
+    never silently fall back to the default. PURE (config-only), torch-free."""
+    mode = (cfg.get("ssl") or {}).get("restart_from")
+    if mode is None:
+        return "pretrained"
+    if mode not in SSL_RESTART_MODES:
+        raise ValueError(
+            f"ssl.restart_from: unknown value {mode!r}. Valid options are "
+            f"'pretrained' (restart the SSL round from the stock <model.name>.pt — avoids "
+            f"confirmation bias, discards the base run's learning) or "
+            f"'current' (continue from the weights that produced the pseudo-labels — keeps that "
+            f"learning, risks reinforcing its own pseudo-label errors).")
+    return mode
+
+
+def ssl_restart_weights(cfg, current_weights, detector_name=None):
+    """The checkpoint an SSL round hands to YOLO() for its retrain — see `ssl_restart_from` for the
+    trade-off between the two modes.
+
+    'pretrained' (default) -> '<detector name>.pt', the stock pretrained checkpoint;
+    'current'              -> `current_weights`, i.e. the weights passed into the round.
+
+    `detector_name` overrides the name read from cfg['model'] / cfg['detector']. 'current' with no
+    `current_weights` raises rather than silently cold-starting from COCO. PURE (config-only, no
+    filesystem), torch-free, so which checkpoint a round restarts from is unit-testable with no
+    ultralytics install and no GPU."""
+    mode = ssl_restart_from(cfg)
+    if mode == "current":
+        if not current_weights:
+            raise ValueError("ssl.restart_from: 'current' continues from the weights passed into "
+                             "the round, but none were given; use 'pretrained' to cold-start.")
+        return current_weights
+    return (detector_name or (_detector(cfg) or {}).get("name", "yolo11n")) + ".pt"
+
+
 def ssl_enabled(cfg):
     """(do_pseudo, do_gdino): whether each SSL mode is allowed to run.
 
@@ -183,7 +281,7 @@ def train(cfg, project=None, data_yaml=None, device=0):
 
     if ssl_seed(cfg) == "gdino":                              # open-vocab cold start before self-training
         if do_gdino and has_unlabeled:
-            best = _gdino_seed_round(cfg, project, data_yaml, device=device)
+            best = _gdino_seed_round(cfg, project, data_yaml, weights=best, device=device)
         else:
             print("SSL gdino skipped: no disjoint ssl.unlabeled_dir")
 
@@ -242,27 +340,53 @@ def _load_pretrained_backbone(model, cfg):
     print(f"pretrained_weights: loaded {len(matched)}/{len(tsd)} matching keys from {ckpt} (strict=False)")
 
 
-def _gdino_seed_round(cfg, project, data_yaml, unlabeled_dir=None, device=0):
+def _gdino_seed_round(cfg, project, data_yaml, weights=None, unlabeled_dir=None, device=0):
     """Round-0 cold start: Grounding DINO open-vocab labels the unlabeled frames -> YOLO labels in
-    the train split, then retrain from scratch. Heavy: GD (torch/transformers) loads lazily here."""
+    the train split, then retrain. Heavy: GD (torch/transformers) loads lazily here.
+
+    WHICH CHECKPOINT THE RETRAIN STARTS FROM is ssl.restart_from (default 'pretrained' — unchanged
+    behaviour), resolved by `ssl_restart_weights`:
+      - 'pretrained': re-initialise from the stock `<model.name>.pt`. The seed round then learns
+        only from Grounding DINO's labels, so it cannot reinforce a YOLO's own errors (confirmation
+        bias), but it throws away everything the base run learned except what the GD labels carry.
+      - 'current': continue from `weights` (the base run's best.pt unless a caller passes another).
+        Keeps that learning, at the risk of the model entrenching its own pseudo-label errors.
+    A typo'd value raises ValueError up front, before any GPU work."""
     import cv2
     from ultralytics import YOLO
     from src.data_prep import io_utils as io
     from src.data_prep.autolabel_gdino import detect, filter_detections
     ssl = cfg.get("ssl", {})
     conf = ssl.get("conf", 0.4)
+    weights = weights or os.path.join(project, "base", "weights", "best.pt")   # round 0: the base run
+    restart_mode = ssl_restart_from(cfg)                     # validate the knob BEFORE the GD pass
+    restart_ckpt = ssl_restart_weights(cfg, weights)
     size = (_detector(cfg) or {}).get("imgsz", 640)
     prompt, class_map = seed_prompt_and_classes(cfg)
     unlabeled_dir = unlabeled_dir or ssl.get("unlabeled_dir", "data/raw/xcad")
     imgs = glob.glob(os.path.join(unlabeled_dir, "**", "*.png"), recursive=True)
     if not imgs:
         print("GD-seed: no unlabeled frames found; skipping")
-        return os.path.join(project, "base", "weights", "best.pt")
+        return weights                                       # nothing seeded -> keep the base weights
     proc = os.path.dirname(data_yaml)
     out_i, out_l = os.path.join(proc, "images/train"), os.path.join(proc, "labels/train")
     os.makedirs(out_i, exist_ok=True); os.makedirs(out_l, exist_ok=True)
-    kept = 0
-    for ip in imgs:
+    def _write(ip, g, lines):
+        """One frame -> CLAHE+resized image plus its label file. `lines == []` writes an EMPTY
+        label, i.e. a BACKGROUND/negative example (what ultralytics counts as a background)."""
+        stem = "gd_" + os.path.splitext(os.path.basename(ip))[0]
+        cv2.imwrite(os.path.join(out_i, stem + ".png"),           # CLAHE+resize to match base/inference
+                    cv2.resize(io.clahe_unsharp(g), (size, size)))
+        open(os.path.join(out_l, stem + ".txt"), "w").write("\n".join(lines))
+
+    # A frame Grounding DINO found NOTHING in is a negative example, not a discard. The original
+    # `if not lines: continue` here was the same defect fixed in _pseudo_label_round: it made every
+    # seed round emit a corpus in which each image contains a lesion, which is what taught the
+    # detector to always fire (per-video false-flag rate ~1.0 -- docs/STENOSIS_ARCHITECTURE_AUDIT.md
+    # A1/A2). Backgrounds share the pseudo-label round's cap so a cold start that fires on almost
+    # nothing cannot flood the train split with pure background.
+    n_pos, bg_candidates = 0, []
+    for ip in sorted(imgs):                                        # sorted -> deterministic round
         g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
         if g is None:
             continue
@@ -271,14 +395,22 @@ def _gdino_seed_round(cfg, project, data_yaml, unlabeled_dir=None, device=0):
         boxes, scores, labels = filter_detections(boxes, scores, labels, conf)
         lines = boxes_labels_to_yolo_lines(boxes, labels, class_map, W, H)
         if not lines:
+            bg_candidates.append(ip)
             continue
-        stem = "gd_" + os.path.splitext(os.path.basename(ip))[0]
-        cv2.imwrite(os.path.join(out_i, stem + ".png"),           # CLAHE+resize to match base/inference
-                    cv2.resize(io.clahe_unsharp(g), (size, size)))
-        open(os.path.join(out_l, stem + ".txt"), "w").write("\n".join(lines))
-        kept += 1
-    print(f"GD-seed: added {kept} Grounding-DINO-labeled frames; retraining")
-    model = YOLO(_detector(cfg)["name"] + ".pt")
+        _write(ip, g, lines)
+        n_pos += 1
+    frac = ssl_max_background_frac(cfg)
+    n_bg = 0
+    for ip in cap_background_frames(bg_candidates, n_pos, frac):
+        g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)                   # re-read: only the capped subset
+        if g is None:
+            continue
+        _write(ip, g, [])
+        n_bg += 1
+    print(f"GD-seed: added {n_pos} Grounding-DINO-labeled frames + {n_bg} backgrounds "
+          f"(empty labels) of {len(bg_candidates)} zero-detection frames, "
+          f"max_background_frac={frac}; retraining restart_from={restart_mode} ({restart_ckpt})")
+    model = YOLO(restart_ckpt)                               # ssl.restart_from: stock .pt vs current
     model.train(data=data_yaml, project=project, name="gdino", exist_ok=True, device=device,
                 **train_kwargs(cfg))
     return os.path.join(project, "gdino", "weights", "best.pt")
@@ -286,15 +418,47 @@ def _gdino_seed_round(cfg, project, data_yaml, unlabeled_dir=None, device=0):
 
 def _pseudo_label_round(weights, cfg, project, data_yaml, unlabeled_dir=None, device=0):
     """Predict on unlabeled frames >= conf, write YOLO pseudo-labels into the train split, retrain.
+
+    Frames the detector FIRES on become positives (image + one label line per box). Frames it fires
+    NOTHING on become BACKGROUNDS: the image is written with an EMPTY label file, which is exactly
+    what ultralytics counts as a background/negative example (see io_utils._split_backgrounds).
+
+    Writing them is the point. This round used to `continue` past every zero-detection frame, and
+    that discard is what produced the zero-negative corpus behind the ~100% false-positive rate on
+    lesion-free clips: if every training image carries a box, the model never sees what "no lesion"
+    looks like and always fires — and each SSL round taught it that lesson again, harder. Ultralytics'
+    own guidance is 0-10% background images; 0% is the pathological case, so the frames the detector
+    passed over are training signal, not trash.
+
+    ssl.max_background_frac (default 0.5) caps backgrounds at that fraction of the frames added this
+    round so the opposite failure can't happen either — a detector that fires on nothing would
+    otherwise flood images/train with pure background and collapse training (0 positives -> 0
+    backgrounds added). Which candidates survive the cap is chosen deterministically, evenly spaced
+    over the sorted frames, no RNG (repo convention for data paths) — see `cap_background_frames`.
+
     Frames are CLAHE+resized before predict AND on disk so the pseudo-labels match the base-train and
-    inference preprocessing; the predicted class id is kept (not forced to 0) for multi-class tasks."""
+    inference preprocessing; the predicted class id is kept (not forced to 0) for multi-class tasks.
+
+    WHICH CHECKPOINT THE RETRAIN STARTS FROM is ssl.restart_from (default 'pretrained' — unchanged
+    behaviour), resolved by `ssl_restart_weights`. `weights` always drives the PREDICT pass; only the
+    retrain init is configurable:
+      - 'pretrained': re-initialise from the stock `<model.name>.pt`, so the round learns the task
+        only from the pseudo-labels and cannot reinforce its own errors through its own weights
+        (confirmation-bias guard) — but it throws away everything the base run learned except what
+        survived into those labels, and pays for a full cold retrain every round.
+      - 'current': continue from `weights`, the very model that produced the pseudo-labels. Keeps the
+        base run's learning, at the risk of entrenching its own pseudo-label mistakes — sharpest here,
+        where a detector that over-fires would be relabelling its false positives as ground truth.
+    A typo'd value raises ValueError up front, before any GPU work."""
     import cv2
     from ultralytics import YOLO
     from src.data_prep import io_utils as io
     conf = cfg["ssl"].get("conf", 0.4)
+    restart_mode = ssl_restart_from(cfg)                     # validate the knob BEFORE the predict pass
+    restart_ckpt = ssl_restart_weights(cfg, weights)
     size = (_detector(cfg) or {}).get("imgsz", 640)
     unlabeled_dir = unlabeled_dir or cfg.get("ssl", {}).get("unlabeled_dir", "data/raw/xcad")
-    imgs = glob.glob(os.path.join(unlabeled_dir, "**", "*.png"), recursive=True)
+    imgs = sorted(glob.glob(os.path.join(unlabeled_dir, "**", "*.png"), recursive=True))
     if not imgs:
         print("SSL: no unlabeled frames found; skipping")
         return weights
@@ -303,23 +467,42 @@ def _pseudo_label_round(weights, cfg, project, data_yaml, unlabeled_dir=None, de
     out_i = os.path.join(proc, "images/train")
     out_l = os.path.join(proc, "labels/train")
     os.makedirs(out_i, exist_ok=True); os.makedirs(out_l, exist_ok=True)
-    kept = 0
+
+    def _prep(ip):
+        g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)                 # unreadable frame -> None, skipped
+        return None if g is None else cv2.resize(io.clahe_unsharp(g), (size, size))
+
+    def _write(ip, frame, lines):
+        """Write one pseudo-labelled frame; `lines` == [] writes an EMPTY label = a background."""
+        stem = "pl_" + os.path.splitext(os.path.basename(ip))[0]
+        cv2.imwrite(os.path.join(out_i, stem + ".png"), frame)   # CLAHE+resized: matches base/inference
+        with open(os.path.join(out_l, stem + ".txt"), "w") as f:
+            f.write("\n".join(lines))                            # no lines -> 0-byte file -> background
+
+    n_pos, bg_candidates = 0, []
     for ip in imgs:
-        g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
-        if g is None:
+        frame = _prep(ip)
+        if frame is None:
             continue
-        frame = cv2.resize(io.clahe_unsharp(g), (size, size))    # match base/inference preprocessing
         b = model.predict(frame, conf=conf, verbose=False, device=device)[0].boxes
         if b is None or len(b) == 0:
+            bg_candidates.append(ip)                             # a NEGATIVE example, not a discard
             continue
-        stem = "pl_" + os.path.splitext(os.path.basename(ip))[0]
-        cv2.imwrite(os.path.join(out_i, stem + ".png"), frame)
-        lines = [f"{int(c)} {x:.6f} {y:.6f} {w:.6f} {h:.6f}"
-                 for c, (x, y, w, h) in zip(b.cls.tolist(), b.xywhn.tolist())]
-        open(os.path.join(out_l, stem + ".txt"), "w").write("\n".join(lines))
-        kept += 1
-    print(f"SSL: added {kept} pseudo-labeled frames; retraining")
-    model = YOLO(_detector(cfg)["name"] + ".pt")
+        _write(ip, frame, [f"{int(c)} {x:.6f} {y:.6f} {w:.6f} {h:.6f}"
+                           for c, (x, y, w, h) in zip(b.cls.tolist(), b.xywhn.tolist())])
+        n_pos += 1
+    frac = ssl_max_background_frac(cfg)
+    n_bg = 0
+    for ip in cap_background_frames(bg_candidates, n_pos, frac):
+        frame = _prep(ip)                                        # re-read: only the capped subset
+        if frame is None:
+            continue
+        _write(ip, frame, [])
+        n_bg += 1
+    print(f"SSL: added {n_pos} positives + {n_bg} backgrounds (empty labels) of "
+          f"{len(bg_candidates)} zero-detection frames, max_background_frac={frac}; "
+          f"retraining restart_from={restart_mode} ({restart_ckpt})")
+    model = YOLO(restart_ckpt)                               # ssl.restart_from: stock .pt vs current
     model.train(data=data_yaml, project=project, name="ssl", exist_ok=True, device=device,
                 **train_kwargs(cfg))
     return os.path.join(project, "ssl", "weights", "best.pt")

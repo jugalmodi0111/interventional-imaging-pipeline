@@ -98,6 +98,80 @@ def cap_frames_per_patient(stems, k, key_fn=group_key):
     return sorted(kept)
 
 
+# --------------------------------------------------------------------------------------------------
+# Dropped-image record (audit B2, 2026-08-16). The converters used to skip an image they could not
+# use with a bare `continue`; the only signal was a printed count nobody diffs between runs, so a
+# silently-incomplete corpus looked exactly like a complete one. The INGEST pipeline was hardened
+# against this same class in the 2026-08-03 audit -- src/ingest/index_dicom.py writes
+# index_errors.jsonl with {path, reason} rows -- and src/data_prep/ never received the treatment.
+# These give it the same convention: one JSONL row per dropped image, under the OUTPUT dir.
+# --------------------------------------------------------------------------------------------------
+CONVERT_ERRORS = "convert_errors.jsonl"
+
+#: The reason vocabulary every converter in this package uses, so drops can be grouped by cause:
+#:   image_unresolved -- the annotation names an image no lookup could find on disk
+#:   unreadable       -- the file exists but cv2 could not decode it
+#:   dim_mismatch     -- the COCO json's declared width/height disagree with the file (audit B1)
+DROP_REASONS = ("image_unresolved", "unreadable", "dim_mismatch")
+
+
+def convert_errors_path(out_dir):
+    """Path of the drop record for a converter output dir."""
+    return os.path.join(out_dir, CONVERT_ERRORS)
+
+
+def record_drop(out_dir, path, reason, drops=None, **extra):
+    """Append one dropped-image row ``{path, reason, **extra}`` to the drop record; return the row.
+
+    APPENDS, never truncates: danilov/cadica/cathaction all convert into the SAME processed dir, so
+    a converter that rewrote the file would erase the drops the previous one just recorded.
+
+    ``extra`` carries reason-specific evidence (e.g. both dimension pairs for ``dim_mismatch``).
+    ``drops`` is an optional list the row is also appended to, so a caller can report the count for
+    ITS OWN run without re-reading a file the other converters also write to.
+    """
+    row = {"path": str(path), "reason": reason}
+    row.update(extra)
+    ensure(out_dir)
+    with open(convert_errors_path(out_dir), "a") as f:
+        f.write(json.dumps(row, sort_keys=True) + "\n")
+    if drops is not None:
+        drops.append(row)
+    return row
+
+
+def read_drops(out_dir):
+    """Every recorded drop row for ``out_dir`` (missing record -> []).
+
+    Blank and unparseable lines are skipped rather than raising: a torn append must cost one row,
+    not the whole record (same degrade-don't-raise rule as src/ingest/manifest.read_jsonl)."""
+    p = convert_errors_path(out_dir)
+    if not os.path.isfile(p):
+        return []
+    rows = []
+    with open(p, errors="replace") as f:
+        for ln in f:
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                d = json.loads(ln)
+            except ValueError:
+                continue
+            if isinstance(d, dict):
+                rows.append(d)
+    return rows
+
+
+def drop_reason_counts(rows):
+    """``{reason: n}`` for a list of drop rows, key-sorted -- a diffable one-line run summary."""
+    counts = {}
+    for r in rows:
+        k = r.get("reason", "unknown")
+        counts[k] = counts.get(k, 0) + 1
+    return dict(sorted(counts.items()))
+
+
 def write_pair(img_gray, mask, stem, out_dir, size=512, clahe=True):
     ensure(os.path.join(out_dir, "img"), os.path.join(out_dir, "msk"))
     im = clahe_unsharp(img_gray) if clahe else img_gray
@@ -148,7 +222,6 @@ def find_coco_jsons(root):
 def coco_seg_to_pairs(root, out_dir, size=512, raw_dir=None):
     """ARCADE-style: union all polygon anns per image -> binary vessel mask. Returns count."""
     from pycocotools.coco import COCO
-    dupes = duplicate_basenames_across_cocos(root)
     n = 0
     for jp in find_coco_jsons(root):
         coco = COCO(jp); base = os.path.dirname(jp)
@@ -165,7 +238,7 @@ def coco_seg_to_pairs(root, out_dir, size=512, raw_dir=None):
                     m = np.maximum(m, coco.annToMask(a))
                 except Exception:
                     pass
-            stem = _disambiguated_stem(ip, jp, dupes)
+            stem = _disambiguated_stem(ip, jp)
             write_pair(g, m, stem, out_dir, size)
             if raw_dir:
                 write_nnunet_case(g, m, stem, raw_dir, size)
@@ -173,18 +246,43 @@ def coco_seg_to_pairs(root, out_dir, size=512, raw_dir=None):
     return n
 
 
-def coco_to_yolo(root, out_dir, size=512, class_id=0, class_map=None):
-    """COCO bbox -> YOLO txt. class_map: {coco_cat_id: yolo_idx} for multi-class; else class_id."""
+def coco_to_yolo(root, out_dir, size=512, class_id=0, class_map=None, drops=None):
+    """COCO bbox -> YOLO txt. class_map: {coco_cat_id: yolo_idx} for multi-class; else class_id.
+
+    Returns the number of images CONVERTED. Every image that could NOT be converted is recorded as a
+    row in ``<out_dir>/convert_errors.jsonl`` (``record_drop``) and, when ``drops`` is passed, also
+    appended to that list so the caller can print the count for its own run (audit B2):
+
+      * ``image_unresolved`` -- the json names a file no lookup could find on disk.
+      * ``unreadable``       -- the file exists but cv2 could not decode it (this used to crash in
+        ``clahe_unsharp`` on the ``None`` return, or slip through as a mis-sized write).
+      * ``dim_mismatch``     -- audit B1: the json's declared ``width``/``height`` disagree with the
+        image on disk. Boxes are normalized by the DECLARED size, so stale metadata silently
+        mis-normalizes EVERY box of that image, and nothing downstream can detect it. We cannot
+        know which coordinate system the annotations are expressed in, so this FAILS CLOSED -- the
+        image is skipped and BOTH dimension pairs are recorded rather than guessing, because a
+        mis-normalized box is worse than a dropped image. An image whose json carries no
+        width/height is unverifiable for the same reason and is dropped the same way.
+    """
     from pycocotools.coco import COCO
-    dupes = duplicate_basenames_across_cocos(root)
     n = 0
     for jp in find_coco_jsons(root):
         coco = COCO(jp); base = os.path.dirname(jp)
         for img in coco.loadImgs(coco.getImgIds()):
             ip = resolve_image(base, img["file_name"]) or resolve_image(root, img["file_name"])
             if not ip:
+                record_drop(out_dir, img.get("file_name"), "image_unresolved", drops=drops, json=jp)
                 continue
-            W, H = img["width"], img["height"]
+            g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
+            if g is None:
+                record_drop(out_dir, ip, "unreadable", drops=drops, json=jp)
+                continue
+            H_img, W_img = g.shape[:2]
+            W, H = img.get("width"), img.get("height")
+            if (W, H) != (W_img, H_img):        # audit B1 -- corroborate metadata, never guess
+                record_drop(out_dir, ip, "dim_mismatch", drops=drops, json=jp,
+                            declared_w=W, declared_h=H, actual_w=W_img, actual_h=H_img)
+                continue
             lines = []
             for a in coco.loadAnns(coco.getAnnIds(imgIds=img["id"])):
                 cid = class_map.get(a["category_id"]) if class_map else class_id
@@ -193,10 +291,9 @@ def coco_to_yolo(root, out_dir, size=512, class_id=0, class_map=None):
                 x, y, w, h = a["bbox"]
                 lines.append(f"{cid} {(x + w / 2) / W:.6f} {(y + h / 2) / H:.6f} "
                              f"{w / W:.6f} {h / H:.6f}")
-            stem = _disambiguated_stem(ip, jp, dupes)
+            stem = _disambiguated_stem(ip, jp)
             sp = split_of(stem)
             ensure(os.path.join(out_dir, "images", sp), os.path.join(out_dir, "labels", sp))
-            g = cv2.imread(ip, cv2.IMREAD_GRAYSCALE)
             cv2.imwrite(os.path.join(out_dir, "images", sp, stem + ".png"),
                         cv2.resize(clahe_unsharp(g), (size, size)))
             open(os.path.join(out_dir, "labels", sp, stem + ".txt"), "w").write("\n".join(lines))
@@ -244,6 +341,13 @@ def duplicate_basenames_across_cocos(root):
     pooling the three splits collapses three different physical images onto one output path
     (last-write-wins) — silent data loss AND a train/test contamination. Returns
     ``{basename: [json_paths]}`` for the colliding names only (empty dict = safe to pool).
+
+    Since the 2026-08-17 B4 fix this is an OPERATOR REPORT, no longer the converters' trigger:
+    ``_disambiguated_stem`` tags every ungrouped stem unconditionally (so ARCADE collisions cannot
+    lose data whatever is attached) and never tags a sequence stem (so grouping cannot break). The
+    one case this report still matters for is a collision between SEQUENCE-shaped basenames, which
+    is deliberately NOT disambiguated — any tag would defeat ``group_key`` — and therefore needs a
+    human to look at it. ``danilov_to_yolo.main`` prints whatever this returns.
     """
     seen = {}
     for jp in find_coco_jsons(root):
@@ -281,21 +385,53 @@ def _split_tag(json_path):
     return os.path.splitext(os.path.basename(json_path))[0]
 
 
-def _disambiguated_stem(basename, json_path, dupes):
-    """OUTPUT stem for one image, resolving ARCADE cross-split basename collisions.
+def _disambiguated_stem(basename, json_path, dupes=None):
+    """OUTPUT stem for one COCO image: split-tagged IFF the stem carries no sequence identity.
 
-    ``dupes`` is the ``duplicate_basenames_across_cocos`` map (basename -> [json paths]). If this
-    image's basename collides across COCO jsons (ARCADE's ``5.png`` in train/val/test), prefix the
-    source json's split tag so the three physical images map to three DISTINCT stems
-    (``train_5``/``val_5``/``test_5``) instead of clobbering one path. Non-colliding basenames keep
-    their bare stem unchanged, so Danilov ``<site>_<patient>_<seq>_<frame>`` names survive intact and
-    ``group_key`` can still collapse them.
+    RULE: prefix ``_split_tag(json_path)`` if and only if ``group_key(stem) == stem``.
+
+    *** THIS CHANGES THE TRAIN/VAL SPLIT OF SOME ARCADE IMAGES (fixed 2026-08-17, audit B4). ***
+    ARCADE stems are now ``train_1`` / ``val_1`` / ``test_1`` unconditionally, so ``split_of``
+    hashes a different string than it did before and some ARCADE images move between train and val.
+    That is intended and accepted (reason below), but it means metrics measured on a corpus built
+    with this code are NOT comparable to the 2026-08-16 numbers in ``experiments/`` or ``docs/``.
+    Rebuild and re-measure BOTH sides before attributing any difference to a model change.
+
+    Why the rule is a biconditional and not simply "always tag":
+
+    * TAG the bare ARCADE names, or the split is not reproducible. The old rule tagged only on a
+      cross-json basename COLLISION, and the collision set depends on WHICH json files happen to be
+      attached: with ARCADE's train json alone ``1.png`` -> stem ``1``; with train+val+test attached
+      the same physical image -> ``train_1``. Different stem -> different ``split_of`` hash -> the
+      same image changes split between dataset configurations, so runs with different attachments
+      cannot be compared at all. Tagging unconditionally makes the stem a property of the IMAGE
+      rather than of the dataset configuration.
+    * NEVER tag a sequence stem, or the split leaks. ``group_key`` collapses Danilov / CADICA /
+      CathAction / AVF frames to one patient/clip key so a whole sequence lands on ONE side of the
+      split. A prefix defeats every one of those regexes -- ``14_002_5_0016`` (group ``14_002``)
+      becomes ``train_14_002_5_0016`` (group: itself) -- giving each frame its own group, i.e. a
+      PER-FRAME split of near-identical video frames. That is precisely the mechanism behind this
+      project's signature failure (F1 0.885 -> 0.214, PROJECT_TRACKER 2026-07-12(a)).
+      ``group_key(stem) == stem`` is exactly the test "this stem has no sequence identity to
+      preserve", which is why it is the right condition rather than a per-dataset special case.
+
+    A tag is likewise refused when it would CREATE a group (a json under a folder named ``14`` over
+    an image ``002_5_0016.png`` would synthesize the fake patient ``14_002``): inventing a sequence
+    identity is as wrong as destroying one.
+
+    Residual risk this rule accepts: two SEQUENCE-shaped images sharing a basename across jsons
+    cannot be disambiguated at all (any tag would break their grouping), so they still collide
+    last-write-wins. ``duplicate_basenames_across_cocos`` reports such collisions and
+    ``danilov_to_yolo.main`` prints them, so an operator sees it rather than losing frames silently.
+
+    ``dupes`` is accepted for backward compatibility with existing call sites and is deliberately
+    IGNORED -- depending on it WAS the bug.
     """
-    bn = os.path.basename(basename)
-    stem = os.path.splitext(bn)[0]
-    if bn in dupes:
-        return f"{_split_tag(json_path)}_{stem}"
-    return stem
+    stem = os.path.splitext(os.path.basename(basename))[0]
+    if group_key(stem) != stem:                  # a sequence frame -> must stay collapsible
+        return stem
+    tagged = f"{_split_tag(json_path)}_{stem}"
+    return tagged if group_key(tagged) == tagged else stem
 
 
 def _split_stems(out_dir, split):

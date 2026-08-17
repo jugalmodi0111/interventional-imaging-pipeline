@@ -28,10 +28,20 @@ def test_split_tag_skips_generic_annotations_container():
     assert io._split_tag("/root/val/annotations/seg_val.json") == "val"
 
 
-def test_disambiguated_stem_keeps_noncolliding_bare_stem():
-    # No collision -> stem unchanged, so Danilov '<site>_<patient>_<seq>_<frame>' survives for group_key.
+def test_disambiguated_stem_keeps_sequence_stems_bare():
+    # A SEQUENCE stem is never tagged, collision or not, so Danilov '<site>_<patient>_<seq>_<frame>'
+    # survives for group_key. (Tagging it would give every frame its own group -> per-frame split.)
     assert io._disambiguated_stem("14_002_5_0016.png", "/x/train/a.json", {}) == "14_002_5_0016"
-    assert io._disambiguated_stem("9.png", "/x/train/a.json", {"5.png": ["/a", "/b"]}) == "9"
+    assert io._disambiguated_stem("14_002_5_0016.png", "/x/train/a.json",
+                                  {"14_002_5_0016.png": ["/a", "/b"]}) == "14_002_5_0016"
+
+
+def test_disambiguated_stem_tags_ungrouped_stems_regardless_of_collisions():
+    # Audit B4 (2026-08-17): the tag no longer depends on WHICH jsons are attached — an ARCADE
+    # stem that collides with nothing is tagged just the same, so its split cannot move between
+    # dataset configurations. See src/data_prep/io_utils._disambiguated_stem.
+    assert io._disambiguated_stem("9.png", "/x/train/a.json", {"5.png": ["/a", "/b"]}) == "train_9"
+    assert io._disambiguated_stem("9.png", "/x/train/a.json", {}) == "train_9"
 
 
 def test_disambiguated_stem_prefixes_split_tag_on_collision():
@@ -69,8 +79,10 @@ def test_dupes_map_drives_distinct_stems_end_to_end(tmp_path):
     assert {stem("5.png", s) for s in ("train", "val", "test")} == {"train_5", "val_5", "test_5"}
     # '1.png' collides in two -> two distinct stems.
     assert stem("1.png", "train") == "train_1" and stem("1.png", "val") == "val_1"
-    # '9.png' is unique -> bare stem preserved.
-    assert stem("9.png", "train") == "9"
+    # '9.png' is unique to the train json, but is tagged all the same: after the B4 fix the stem
+    # is a property of the image, not of which jsons happen to be attached (its split would
+    # otherwise move the moment val/test were added).
+    assert stem("9.png", "train") == "train_9"
 
 
 # --- arcade_to_coco.main: numTraining counts disk, not the returned n ---------------
