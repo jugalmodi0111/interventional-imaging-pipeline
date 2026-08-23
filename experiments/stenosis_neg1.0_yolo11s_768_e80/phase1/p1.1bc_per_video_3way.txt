@@ -1,0 +1,100 @@
+CADICA val videos: 255 (patients hashed to the val split)
+lesion/non-lesion truth from: CADICA lesionVideos.txt manifests
+weight sets to score: ['current', 'stenosis-baseline-best', 'stenosis-neg025-best']
+
+========================================================================
+weights: current
+========================================================================
+lesion videos: 102 | non-lesion videos: 153
+
+per-video operating table (IoU 0.3; a clip is FLAGGED if the detector fires anywhere in it)
+conf   sensitivity        false-flag rate    specificity   Youden J
+0.05   0.882 ( 90/102)    0.745 (114/153)     0.255         +0.137
+0.10   0.833 ( 85/102)    0.621 ( 95/153)     0.379         +0.212
+0.15   0.765 ( 78/102)    0.536 ( 82/153)     0.464         +0.229
+0.20   0.706 ( 72/102)    0.464 ( 71/153)     0.536         +0.242
+0.25   0.598 ( 61/102)    0.386 ( 59/153)     0.614         +0.212
+0.35   0.412 ( 42/102)    0.183 ( 28/153)     0.817         +0.229
+0.50   0.147 ( 15/102)    0.052 (  8/153)     0.948         +0.095
+
+best Youden J at conf 0.20 (J = +0.242)
+Read J as a balance point only -- the clinical trade-off is Dr. Reddy's
+call, and for a screening flag a missed stenosis costs far more than a
+false flag. PPV is prevalence-dependent: see docs/STENOSIS_GATE_PROPOSAL.md.
+
+temporal voting (min_hits=2) at conf 0.05: 83/102 = 0.814 vs raw 0.882 -> REGRESSION -0.069
+  [!] Voting made it WORSE, as on 2026-08-16 (0.902 -> 0.833).
+      min_hits>=2 drops detections present in a single frame, and on
+      keyframe-annotated CADICA the true positive often IS a single
+      frame. RAW is the honest baseline. To pursue voting, try
+      min_hits=1 (IoU-linking for gap recovery only).
+
+========================================================================
+weights: stenosis-baseline-best
+========================================================================
+lesion videos: 102 | non-lesion videos: 153
+
+per-video operating table (IoU 0.3; a clip is FLAGGED if the detector fires anywhere in it)
+conf   sensitivity        false-flag rate    specificity   Youden J
+0.05   0.931 ( 95/102)    0.980 (150/153)     0.020         -0.049
+0.10   0.902 ( 92/102)    0.954 (146/153)     0.046         -0.052
+0.15   0.882 ( 90/102)    0.902 (138/153)     0.098         -0.020
+0.20   0.853 ( 87/102)    0.850 (130/153)     0.150         +0.003
+0.25   0.843 ( 86/102)    0.837 (128/153)     0.163         +0.007
+0.35   0.745 ( 76/102)    0.693 (106/153)     0.307         +0.052
+0.50   0.608 ( 62/102)    0.444 ( 68/153)     0.556         +0.163
+
+best Youden J at conf 0.50 (J = +0.163)
+Read J as a balance point only -- the clinical trade-off is Dr. Reddy's
+call, and for a screening flag a missed stenosis costs far more than a
+false flag. PPV is prevalence-dependent: see docs/STENOSIS_GATE_PROPOSAL.md.
+
+temporal voting (min_hits=2) at conf 0.05: 89/102 = 0.873 vs raw 0.931 -> REGRESSION -0.059
+  [!] Voting made it WORSE, as on 2026-08-16 (0.902 -> 0.833).
+      min_hits>=2 drops detections present in a single frame, and on
+      keyframe-annotated CADICA the true positive often IS a single
+      frame. RAW is the honest baseline. To pursue voting, try
+      min_hits=1 (IoU-linking for gap recovery only).
+
+========================================================================
+weights: stenosis-neg025-best
+========================================================================
+lesion videos: 102 | non-lesion videos: 153
+
+per-video operating table (IoU 0.3; a clip is FLAGGED if the detector fires anywhere in it)
+conf   sensitivity        false-flag rate    specificity   Youden J
+0.05   0.902 ( 92/102)    0.895 (137/153)     0.105         +0.007
+0.10   0.882 ( 90/102)    0.850 (130/153)     0.150         +0.033
+0.15   0.873 ( 89/102)    0.824 (126/153)     0.176         +0.049
+0.20   0.843 ( 86/102)    0.804 (123/153)     0.196         +0.039
+0.25   0.814 ( 83/102)    0.771 (118/153)     0.229         +0.042
+0.35   0.706 ( 72/102)    0.693 (106/153)     0.307         +0.013
+0.50   0.539 ( 55/102)    0.418 ( 64/153)     0.582         +0.121
+
+best Youden J at conf 0.50 (J = +0.121)
+Read J as a balance point only -- the clinical trade-off is Dr. Reddy's
+call, and for a screening flag a missed stenosis costs far more than a
+false flag. PPV is prevalence-dependent: see docs/STENOSIS_GATE_PROPOSAL.md.
+
+temporal voting (min_hits=2) at conf 0.05: 88/102 = 0.863 vs raw 0.902 -> REGRESSION -0.039
+  [!] Voting made it WORSE, as on 2026-08-16 (0.902 -> 0.833).
+      min_hits>=2 drops detections present in a single frame, and on
+      keyframe-annotated CADICA the true positive often IS a single
+      frame. RAW is the honest baseline. To pursue voting, try
+      min_hits=1 (IoU-linking for gap recovery only).
+
+========================================================================
+A/B: current vs stenosis-baseline-best   (sensitivity | false-flag)
+========================================================================
+conf                  current   stenosis-baseline-best   d-sens   d-fpr
+0.05   0.882 | 0.745             0.931 | 0.980             -0.049   -0.235
+0.10   0.833 | 0.621             0.902 | 0.954             -0.069   -0.333
+0.15   0.765 | 0.536             0.882 | 0.902             -0.118   -0.366
+0.20   0.706 | 0.464             0.853 | 0.850             -0.147   -0.386
+0.25   0.598 | 0.386             0.843 | 0.837             -0.245   -0.451
+0.35   0.412 | 0.183             0.745 | 0.693             -0.333   -0.510
+0.50   0.147 | 0.052             0.608 | 0.444             -0.461   -0.392
+
+d-sens > 0 and d-fpr < 0 means the new weights are better on BOTH axes.
+A mixed result is a trade, not an improvement -- read it against the signed
+floors once they exist, not by eye.
