@@ -362,10 +362,21 @@ def test_enabled_but_lesion_only_corpus_warns_instead_of_crashing(tmp_path, monk
 
 
 def test_shipped_config_enables_negative_sampling():
+    """The shipped config must SAMPLE BACKGROUNDS AT ALL -- that is the A1 contract.
+
+    Deliberately asserts `> 0` rather than a specific ratio. The ratio is a swept tuning value, not
+    a contract: it was 1.0 on 2026-08-16 and moved to 0.25 on 2026-08-23 once the sweep showed 1.0
+    erodes the max achievable per-video sensitivity below the clinical floor
+    (experiments/stenosis_neg1.0_yolo11s_768_e80/RESULTS.md). Pinning the exact number here turned a
+    tuning decision into a test failure and told us nothing about whether the fix was still in place.
+    What must never regress is the ratio going to 0 -- that is the pre-fix zero-background corpus."""
     cfg = yaml.safe_load(open(os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "configs", "stenosis_yolo.yaml")))
-    assert cfg["datasets"]["cadica"]["negatives_per_positive"] == 1.0
+    npp = cfg["datasets"]["cadica"]["negatives_per_positive"]
+    assert npp > 0, (
+        f"negatives_per_positive is {npp!r} -- background sampling is OFF, which reproduces the "
+        f"zero-background corpus behind the ~1.0 per-video false-flag rate (audit A1).")
 
 
 # --------------------------------------------------------------------------------------------

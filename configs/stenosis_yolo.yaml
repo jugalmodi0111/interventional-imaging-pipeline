@@ -2,7 +2,7 @@ task: stenosis_detection
 datasets:
   arcade_stenosis: {root: data/raw/arcade/stenosis, task: 2, format: coco}   # stenosis split only
   danilov:         {root: data/raw/danilov, format: coco, max_frames_per_patient: 5}   # cap 5/patient: 64 patients/8325 frames dilute the honest metric (arcade-only 0.246 > +danilov 0.214)
-  cadica:          {root: data/raw/cadica, format: native, max_frames_per_patient: 40, negatives_per_positive: 1.0}   # 2024 patient-diverse lesion angiography; run cadica_to_yolo prep to include (patients > frames). cap 40/patient: 3996 keyframes over ~42 patients are near-duplicates -> cap cuts redundancy + val-fraction variance
+  cadica:          {root: data/raw/cadica, format: native, max_frames_per_patient: 40, negatives_per_positive: 0.25}   # 2024 patient-diverse lesion angiography; run cadica_to_yolo prep to include (patients > frames). cap 40/patient: 3996 keyframes over ~42 patients are near-duplicates -> cap cuts redundancy + val-fraction variance
   # negatives_per_positive 1.0 (0 = off, the pre-2026-08-16 behaviour): sample that many BACKGROUND
   # frames per CADICA positive written, drawn from CADICA's NON-LESION videos ONLY (per-patient
   # lesionVideos.txt/nonlesionVideos.txt; an unannotated frame inside a LESION video is NOT a
@@ -12,6 +12,13 @@ datasets:
   # "0 backgrounds" on every scan -- so the detector never saw a lesion-free frame and learned to
   # always fire (per-video false-flag rate ~1.0, negative Youden J; docs/STENOSIS_ARCHITECTURE_AUDIT
   # .md A1). ~400 non-lesion CADICA videos (~40-120k frames) were sitting unused.
+  # SWEPT 2026-08-23 (experiments/stenosis_neg1.0_yolo11s_768_e80/RESULTS.md). 0 / 0.25 / 1.0 ->
+  # 0% / 10.5% / 31.9% background. More background monotonically improves per-video discrimination
+  # (Youden J at conf 0.10: -0.052 -> +0.033 -> +0.212), BUT it erodes the MAX ACHIEVABLE per-video
+  # sensitivity: 0.931 -> 0.902 -> 0.882. At 1.0 the model cannot reach 0.90 sensitivity at ANY
+  # threshold, so it fails the clinical floor before specificity is even considered. 0.25 is the only
+  # swept value that improves discrimination AND keeps the sensitivity ceiling at the floor -- and it
+  # is also the per-frame optimum (F1 0.288 vs 0.252 at 1.0). Do NOT raise this to 2.0.
   # SIZING, honestly: ultralytics' own guidance is ~0-10% background images to suppress false
   # positives. CADICA is roughly half the pooled 3409-image corpus, so 1.0 puts the WHOLE corpus
   # near 30% background -- deliberately well ABOVE that guidance, because the corpus is coming from

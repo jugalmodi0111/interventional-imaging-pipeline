@@ -1,20 +1,32 @@
 # Stenosis acceptance gate — reframe proposal for clinical sign-off
 
-**Status:** PROPOSED, unsigned · **Created:** 2026-08-16 · **Owner:** tech@manufex.io
+**Status:** PROPOSED, unsigned · **Created:** 2026-08-16 · **Corrected:** 2026-08-23 · **Owner:** tech@manufex.io
 **Decision needed from:** Dr. Reddy
 **Evidence:** [`PHASE1_RESULTS.md`](../experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e150/PHASE1_RESULTS.md) · [`STAGE2_PHASE1_POA.md`](STAGE2_PHASE1_POA.md)
 
 ---
 
-> **SUPERSEDED IN PART, 2026-08-16.** Specificity has since been measured and it is ~nil: the
-> models flag 90–100% of non-lesion clips, Youden J is negative at every threshold for the retrained
-> weights, and per-video PPV falls **below the base rate**. The sensitivity 0.902 quoted below was
-> largely an artifact of a trigger-happy detector — the same behaviour that produced the ~1.0
-> false-flag rate. **The reframe in §1 still stands; the claim that the model is close to supporting
-> it does not.** The §3 tables remain valid as the specificity-vs-PPV arithmetic. See
-> `experiments/stenosis_arcade+cadica+danilov_yolo11s_768_e80_augtuned/RESULTS.md`.
+> **SUPERSEDED, 2026-08-23 — read this before quoting any number below.**
 >
-> **Dr. Reddy was given 0.902 before specificity existed. That needs correcting with him.**
+> The 0.902 sensitivity in §1 was measured **without specificity**, on a detector that had never seen
+> a negative training example. It flagged ~98% of lesion-free clips. That figure was given to Dr.
+> Reddy before the false-flag rate existed, and **it needs correcting with him.**
+>
+> Root cause found and fixed (`docs/STENOSIS_ARCHITECTURE_AUDIT.md` A1): the corpus contained **zero
+> background frames**. The fix was then swept over three background ratios
+> (`experiments/stenosis_neg1.0_yolo11s_768_e80/RESULTS.md`). Current honest state:
+>
+> | corpus | background | max sensitivity | false-flag there | specificity there |
+> |---|---|---|---|---|
+> | as quoted to Dr. Reddy | 0% | 0.931 | **0.980** | 0.020 |
+> | shipped default now | 10.5% | 0.902 | 0.895 | 0.105 |
+> | aggressive | 31.9% | **0.882 — cannot reach 0.90** | — | — |
+>
+> **The §1 reframe still stands: per-study is the right metric.** What does not stand is any
+> suggestion the model is close to supporting it. At the sensitivity the gate requires, specificity
+> is **0.105** against the ~0.95 needed — the flag is worth ~3 points of PPV over the base rate.
+> The §3 arithmetic below remains valid and is now the tool for setting the floor, not evidence the
+> floor is within reach.
 
 ## 1. Where this stands
 
@@ -117,6 +129,11 @@ Sensitivity 0.95 is proposed as a concrete reading of "improve a bit" from 0.902
    significant stenosis? Without this, "precise" cannot be converted into a specificity floor.
 3. **PPV target at that prevalence.** Of the studies the tool flags, what fraction must be true
    positives for the flag to be clinically useful rather than noise?
+
+**What the sweep now adds to Q1.** The sensitivity floor is not free to set high: background
+sampling trades sensitivity ceiling against specificity, and at 31.9% background the model tops out
+at 0.882. If the floor lands at 0.95, no configuration measured so far can reach it — the answer is
+then "this model does not qualify", which is a legitimate and useful outcome to record.
 
 Answering (2) and (3) sets the specificity floor directly from the §3 table. Answering (1) fixes the
 other axis. Then `floor_ok` for stenosis becomes a real, evaluable question rather than a permanent

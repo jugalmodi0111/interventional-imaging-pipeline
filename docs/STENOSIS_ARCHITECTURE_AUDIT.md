@@ -257,7 +257,7 @@ additionally re-verified with an independent adversarial fixture that reused non
 
 | ID | Severity | Status |
 |---|---|---|
-| **A1** zero negative frames | CRITICAL | **FIXED** — `cadica_to_yolo` negative sampling, 38 tests |
+| **A1** zero negative frames | CRITICAL | **FIXED + SWEPT 2026-08-23** — real monotonic gain, but not sufficient; see `experiments/stenosis_neg1.0_yolo11s_768_e80/RESULTS.md` |
 | **A2** SSL pseudo-label discards negatives | HIGH | **FIXED** — empty labels + `max_background_frac`, 17 tests |
 | **A2b** GD seed round, third instance | HIGH | **FIXED** — same shape, 4 tests |
 | **B3** auditor blind to labels | HIGH | **FIXED** — `require_backgrounds` + background counts, 4 tests |
