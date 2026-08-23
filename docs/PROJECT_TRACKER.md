@@ -381,7 +381,7 @@ Catalogued 2026-08-09, several still open as of this update:
 - [ ] `docs/HOSTING_QUESTIONNAIRE.md` is **1 byte** — needs 8 answers (jurisdiction, whether inference leaves the Institute's network and what exactly leaves — this determines whether hosted serving is even legal under B5, weights custody, PHI-in-transit, retention, auth, unreachable behavior, DINOv3 licence)
 - [ ] Realignment plan checkboxes T1.1/T1.3/T1.5/T1.6/T1.7 show `[ ]` though all are built
 - [ ] Orchestrator plan shows 80/85 steps unchecked though phases B0/C/D/E landed
-- [ ] `DATASETS.md` predates the 2026-08-13 survey — needs AngioCAD/CARDIAG/CardioSyntax + the AVF findings
+- [~] `DATASETS.md` predates the 2026-08-13 survey — **AngioCAD now verified and documented 2026-08-23 (no bounding boxes; classification-only — see DATASETS.md)**; CARDIAG/CardioSyntax + the AVF findings still to add
 - [ ] No `pipelines/stage5_*.md` though Stage 5 is in the roadmap
 
 ---

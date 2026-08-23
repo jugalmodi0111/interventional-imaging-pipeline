@@ -92,3 +92,42 @@ CXR sets for encoder pretrain + external validation: **NIH ChestX-ray14** / **Pa
 Each `configs/*.yaml` `datasets:` block points `root:` at `data/raw/<name>/`. Change the path there,
 not in code. `arcade_to_coco` / `dca1_to_nnunet` auto-discover the COCO json + image/GT pairs under
 the root — confirm the download unzipped into that folder.
+
+
+---
+
+## AngioCAD — VERIFIED 2026-08-23 (labels file inspected, not inferred)
+
+**Zenodo `10.5281/zenodo.15826856`** · CC-BY-4.0 · 16.4 GB (4 RAR parts + 2 xlsx) · sequential PNG
+frames de-identified from DICOM.
+
+**IT HAS NO BOUNDING BOXES.** This was checked by downloading `AngioCAD_Labels.xlsx` (43 kB) and
+reading it — cheap, and it contradicts secondary sources that describe per-frame boxes. The file is
+**one row per patient**, 413 rows x 18 columns:
+
+```
+ID | Right Coronary Series | Left Coronary Series | LM | Prox LAD | Mid LAD | Dist LAD |
+1st dig | 2nd dig | Prox LCX | Mid LCX | Dist LCX | OM | Prox RCA | Mid RCA | Dist RCA | PDA | PLB
+```
+
+Values are one of seven severity grades: `NL`, `1-25`, `26-50`, `51-75`, `76-90`, `91-99`, `100`.
+A 43 kB spreadsheet cannot hold per-frame boxes for 413 videos; the size alone was the tell.
+
+| | count |
+|---|---|
+| segment labels | 6,195 (4,603 `NL` = 74%, 1,592 diseased) |
+| patients | 413 (360 with disease, **53 all-normal = 12.8%**) |
+
+**Consequence — this dataset CANNOT train the YOLO stenosis detector.** No localization targets. It is
+a **patient/segment-level classification** dataset, and a good one: real negatives at both segment
+(74%) and patient (12.8%) level, plus a series->artery mapping so videos can be joined to the label
+of the artery they actually show.
+
+**So the "more patients for the detector" and "reformulate as a study-level classifier" options are
+the same path** — the label format forces it. That also makes the work dual-use: a study-level
+classifier is the same machinery Model One (AVF) needs, so the proxy path and the product path share
+code rather than diverging. This retroactively confirms the tracker's proposed Task 8 name,
+`angiocad_to_cls.py`, was right.
+
+**Operational notes:** 4-part RAR needs `unrar`/`7z` (not stdlib); the record reports 3.4 TB extracted,
+so extraction must be selective, not wholesale.
