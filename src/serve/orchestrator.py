@@ -49,7 +49,7 @@ routing anywhere.
 from dataclasses import replace
 from src.serve.report import StudyReport, Finding
 from src.serve.registry import resolve
-from src.serve.diagnosis import det_to_findings, seg_to_finding, study_defer
+from src.serve.diagnosis import cls_to_finding, det_to_findings, seg_to_finding, study_defer
 from src.serve.stenosis_triage import triage_decision
 from src.eval.audit import input_hash, record
 
@@ -172,8 +172,14 @@ class DiagnosticOrchestrator:
                 findings=[], deferred=True, defer_reason="model-unavailable",
                 frames_analyzed=1, model_versions=versions))
 
+        # Explicit three-way branch, not det-vs-everything-else: an unrecognized entry.task never
+        # reaches here (its model callable raised ModelUnavailable above), so `else` is exactly
+        # "seg" and each task keeps its own reason vocabulary -- a cls "defer-band" routed through
+        # seg_to_finding would come back relabelled "low-confidence".
         if entry.task == "det":
             findings = self._det_findings(entry, out)
+        elif entry.task == "cls":
+            findings = [cls_to_finding(entry, out)]
         else:
             findings = [seg_to_finding(entry, out)]
 
@@ -248,6 +254,25 @@ def _load_seg(model_path):
     return lambda frame: model(frame)
 
 
+def _load_cls(model_path):
+    """Model One counterpart of `_load_det`/`_load_seg` -- see `_load_det` for the rationale.
+    Backed by `src.serve.infer_cls.ClsModel` (hosted torch, B8; NOT the CoreML edge path).
+
+    The import sits INSIDE the try, unlike its two neighbours: this path's heavy dependency is
+    torch, which the hosted deployment can be missing outright, and `_load_det`'s own docstring
+    says the goal is to scope such a failure to one modality. An ImportError here therefore
+    downgrades AVF to 'always defers' rather than taking `build_orchestrator` down with it.
+    """
+    try:
+        from src.serve.infer_cls import ClsModel
+        model = ClsModel(model_path)
+    except Exception as e:
+        def _unavailable(frame, _path=model_path, _e=e):
+            raise ModelUnavailable(f"cls model at {_path!r} failed to load: {_e}") from _e
+        return _unavailable
+    return lambda frame: model(frame)
+
+
 def _model_factory(entry):
     """The real `model_factory(entry) -> callable(frame_gray) -> dict` that `build_orchestrator`
     wires in. `entry.task` selects `DetModel` vs `SegModel` (via `_load_det`/`_load_seg`, looked up
@@ -260,6 +285,8 @@ def _model_factory(entry):
         return _load_det(entry.model_path)
     if entry.task == "seg":
         return _load_seg(entry.model_path)
+    if entry.task == "cls":
+        return _load_cls(entry.model_path)
 
     def _unknown_task(frame, _entry=entry):
         raise ModelUnavailable(f"unknown task type {_entry.task!r} for modality {_entry.modality!r}")

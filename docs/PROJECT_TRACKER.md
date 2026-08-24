@@ -1,8 +1,8 @@
 # Project Tracker - Interventional Imaging Pipeline
 
 **Purpose:** single source of truth for *what is done* and *what is next*. Check boxes as you go.
-**Last updated:** 2026-08-16 · **Owner:** jugalmodi0111 · **HEAD at update:** `f616f19` (main, + uncommitted 2026-08-16 work)
-**Verified suite at update:** **623 passing** across 43 test files (`python -m pytest tests/ -q`)
+**Last updated:** 2026-08-24 · **Owner:** jugalmodi0111 · **HEAD at update:** `164cc27` (branch `model-one-scaffold`, + uncommitted Model One scaffold)
+**Verified suite at update:** **836 passing** across 52 test files (`python -m pytest tests/ -q`)
 **Companion docs:** [`Model_Pipeline_Playbook.md`](Model_Pipeline_Playbook.md) (rationale) · [`DATASETS.md`](DATASETS.md) · [`INGEST_HDD_RUNBOOK.md`](INGEST_HDD_RUNBOOK.md) · [`Dialygo_Orientation_and_Requirements.md`](Dialygo_Orientation_and_Requirements.md) (B1–B9, binding) · [`INTENDED_USE.md`](INTENDED_USE.md)
 
 ---
@@ -29,7 +29,7 @@
 | F | **Stenosis detection** | `!` **root cause fixed + swept (2026-08-23); still far from a usable screen** | `experiments/…cadica+danilov…/run/weights/best.pt` | Per-frame F1 0.298 after the aug retrain (+0.026). **But per-video specificity is 0.00–0.25 and Youden J is NEGATIVE at every threshold** — the model flags ~100% of non-lesion clips. PPV below base rate. The earlier 0.902 sensitivity was an artifact of trigger-happiness, not discrimination. |
 | G | **Catheter tracking** | `~` **trained, never gated** | `outputs/best-catheter.pt` | IoU / fps / ID-switch **never measured**. Tracking code was **deleted** with the video path (see §4). |
 | H | **Edge export / INT8** | `x` **gate PASSED** | `outputs/coronary_student_clgeodice/student.int8.static.onnx` | **clDice 0.9786 vs fp32 0.9783 (drop −0.0003 ≤ 0.03 gate)**, Dice 0.9156 both, 1.93 MB → 0.52 MB, mask agreement 0.9996. Re-checked 2026-08-16. |
-| I | **Model One (AVF classifier)** | `[ ]` **not started — plan written** | none | Plan: [`plans/2026-08-13-model-one-classifier-scaffold.md`](superpowers/plans/2026-08-13-model-one-classifier-scaffold.md). Awaiting approval. |
+| I | **Model One (AVF classifier)** | `~` **scaffold code-complete 2026-08-24, all 7 tasks** | `src/eval/cls_metrics.py` · `src/models/frozen_backbone.py` · `src/train/train_classifier.py` · `src/serve/infer_cls.py` · `cls_to_finding` | Train→serve path proven end-to-end **on synthetic data only**. No real frames exist (B5/B9 unexecuted); backbone bake-off unrun; floors unsigned so the registry entry ships `floor_ok: false` and every finding defers. |
 | J | **AVF data acquisition** | `!` **PENDING — no public data exists** | none | See §7. Confirmed: zero public AVF fistulography datasets worldwide. |
 | K | **Cerebral DSA / TAVR / AVF audio / AVF tabular** | `[ ]` not started | none | Stubs or orphan configs only. |
 | L | **Regulatory (Stage 5)** | `[ ]` not started | `INTENDED_USE.md` drafted, unsigned | SaMD class undetermined; `HOSTING_QUESTIONNAIRE.md` is 1 byte. |
@@ -40,7 +40,7 @@
 
 ## 2. Code inventory — verified line-by-line 2026-08-15
 
-Total `src/`: **6,907 LOC** across 58 Python files. Counts are exact (`wc -l`).
+Total `src/`: **8,459 LOC** across 65 Python files (was 6,907/58 on 2026-08-15). Counts are exact (`wc -l`).
 
 ### 2.1 `src/ingest/` — Dialygo institutional ingest (2,188 LOC, 10 modules) `x`
 
@@ -88,10 +88,10 @@ Built 2026-08-09 → 2026-08-13 across 16 planned tasks. **All modules import to
 ### 2.3 Other implemented modules
 
 - `src/data_prep/` (1,626 LOC): `io_utils.py` (431 — grouping, splits, `audit_split_leakage`), `cathaction_to_yolo` (210), `cadica_to_yolo` (203), `autolabel_gdino` (148), `danilov_to_yolo` (140), `harmonize` (108), `balance` (94), `verify_sequence` (61), `preprocess` (50), `dca1_to_nnunet` (48), `arcade_to_coco` (31)
-- `src/eval/` (738 LOC): `calibration.py` (167 — ECE, Brier, reliability, temperature scaling, AUROC, OOD), `annotation_qa` (148), `temporal_vote` (185 — **restored 2026-08-16, offline cine scoring only**), `metrics` (77 — Dice/clDice/CLGeoDice/HD95), `val_by_source` (56), `audit` (25)
+- `src/eval/` (809 LOC): `cls_metrics.py` (**62 — NEW 2026-08-24**, confusion vocabulary + threshold-at-target-sensitivity + bootstrap CIs; pure numpy), `calibration.py` (167 — ECE, Brier, reliability, temperature scaling, AUROC, OOD), `annotation_qa` (148), `temporal_vote` (185 — **restored 2026-08-16, offline cine scoring only**), `metrics` (77 — Dice/clDice/CLGeoDice/HD95), `val_by_source` (56), `audit` (25)
 - `src/export/` (332 LOC): `quantize_int8.py` (**94 — rewritten to real static PTQ 2026-08-13**, was a 10-line dynamic stub), `yolo_to_coreml` (89), `coreml_validate` (83), `to_coreml` (52), `to_onnx` (14)
-- `src/train/` (575 LOC): `train_detector.py` (334), `train_seg.py` (233), `train_audio.py` (**8 — stub**)
-- `src/models/` (275 LOC): `distill` (108), `clgeodice` (59), `grounded_sam` (62), `seg_student` (46)
+- `src/train/` (943 LOC): `train_detector.py` (334), `train_seg.py` (233), `train_classifier.py` (**185 — NEW 2026-08-24**, Model One: patient-grouped dataset, head-only loop, temperature fit, operating point, `head.pt`+`metrics.json`, CLI), `train_audio.py` (**8 — stub**)
+- `src/models/` (328 LOC): `distill` (108), `frozen_backbone.py` (**53 — NEW 2026-08-24**, timm-lazy factory + frozen-backbone/linear-head classifier + offline `test-tiny`), `clgeodice` (59), `grounded_sam` (62), `seg_student` (46)
 
 ### 2.4 Stubs and TODO shells — the honest list (4 remaining)
 
@@ -100,9 +100,11 @@ Built 2026-08-09 → 2026-08-13 across 16 planned tasks. **All modules import to
 - [~] `src/eval/cross_vendor.py` (41) — TODO shell. Blocks Stage 3b.
 - [~] `src/eval/edge_benchmark.py` (39) — ONNX path works; torch path prints a TODO.
 
-### 2.5 Missing modules Model One needs (none exist yet)
+### 2.5 Modules Model One needs — **ALL WRITTEN 2026-08-24**
 
-`src/models/frozen_backbone.py` · `src/train/train_classifier.py` · `src/eval/cls_metrics.py` · `src/serve/infer_cls.py` · `cls_to_finding` in `diagnosis.py`. All specified in the Model One plan; none written.
+`src/models/frozen_backbone.py` (53) · `src/train/train_classifier.py` (185) · `src/eval/cls_metrics.py` (62) · `src/serve/infer_cls.py` (40) · `cls_to_finding` in `diagnosis.py` · `_load_cls` + the `cls` branch in `orchestrator.py` · `avf_fistulography` in `configs/orchestrator.yaml` · `make train-avf-cls`. All seven plan tasks done, TDD, 36 new tests.
+
+**What "done" does and does not mean.** The *code path* is complete and proven end-to-end on synthetic frames. Nothing has been trained on a real image: B5/B9 are still unexecuted, no AVF frames exist on disk, the backbone bake-off is unrun (`test-tiny` is a 32-dim seeded conv, never a real backbone), and B7 floors are `null` — so the registry entry ships `floor_ok: false` and every AVF finding defers by construction.
 
 ---
 
@@ -251,21 +253,37 @@ R is 0.24–0.28 everywhere, which **retires three Phase-2 levers on evidence**:
 
 - [ ] Decide: close this out (restore tracker + re-download CathAction + measure) or formally park it as research-track debt
 
-### 4.7 Model One — AVF classifier `[ ]` — plan written, not started
+### 4.7 Model One — AVF classifier `~` — scaffold code-complete 2026-08-24, untrained
 
 Plan: [`2026-08-13-model-one-classifier-scaffold.md`](superpowers/plans/2026-08-13-model-one-classifier-scaffold.md) — 7 TDD tasks, everything testable on synthetic data before real frames exist.
 
-1. `cls_metrics.py` — sensitivity/specificity/confusion, threshold-at-target-sensitivity, bootstrap CIs
-2. `frozen_backbone.py` — timm-lazy factory + frozen backbone + linear head (B4); offline `test-tiny` backbone
-3. Trainer part 1 — dataset over the ingest frame store; patient-grouped split where overlap is an **assertion failure**
-4. Trainer part 2 — head-only training, temperature calibration, threshold from a sensitivity target, `head.pt` + `metrics.json`
-5. `infer_cls.py` — hosted torch `ClsModel`, defer band enforced at the model boundary
-6. Wiring — `cls_to_finding`, orchestrator `cls` branch, registry entry with `floor_ok: false`
-7. End-to-end synthetic proof + tracker update
+- [x] 1. `cls_metrics.py` — sensitivity/specificity/confusion, threshold-at-target-sensitivity, bootstrap CIs (6 tests)
+- [x] 2. `frozen_backbone.py` — timm-lazy factory + frozen backbone + linear head (B4); offline `test-tiny` backbone (4 tests)
+- [x] 3. Trainer part 1 — dataset over the ingest frame store; patient-grouped split where overlap is an **assertion failure** (6 tests)
+- [x] 4. Trainer part 2 — head-only training, temperature calibration, threshold from a sensitivity target, `head.pt` + `metrics.json`, CLI, `make train-avf-cls` (4 tests)
+- [x] 5. `infer_cls.py` — hosted torch `ClsModel`, defer band enforced at the model boundary (5 tests)
+- [x] 6. Wiring — `cls_to_finding`, orchestrator `cls` branch + `_load_cls`, registry entry with `floor_ok: false` (5 + 4 tests)
+- [x] 7. End-to-end synthetic proof (train → `head.pt` → `ClsModel` → `analyze_frame`) + tracker (2 tests)
 
-**Proposed Task 8 (added after the dataset survey, not yet approved):** `angiocad_to_cls.py` + `cadica_to_cls.py` adapters so the proxy path trains through the identical code the real data will use.
+**Three plan-vs-repo drifts found and fixed while executing** (the plan was written 2026-08-13; the
+repo moved under it) — see the 2026-08-24 changelog entry for the detail. The first was a real
+leakage-class defect in the plan's own code.
 
-**Blocking facts:** floors are `null` in `configs/avf_fistulography.yaml` (B7 sign-off required); backbone bake-off undecided (DINOv2 vs RAD-DINO vs BiomedCLIP — `STAGE_ACCURACY_RESEARCH.md` recorded "REFUTED: DINOv2 wins" so this must be measured, not assumed); `timm` not installed.
+**Proposed Task 8 (added after the dataset survey, not yet approved):** `cadica_to_cls.py` adapter so
+the proxy path trains through the identical code the real data will use. **`angiocad_to_cls.py` has
+since landed** (2026-08-23) and is the AngioCAD half of this, so Task 8 is now only the CADICA half.
+
+**Blocking facts (unchanged by the scaffold):** floors are `null` in `configs/avf_fistulography.yaml`
+(B7 sign-off required); backbone bake-off undecided (DINOv2 vs RAD-DINO vs BiomedCLIP —
+`STAGE_ACCURACY_RESEARCH.md` recorded "REFUTED: DINOv2 wins" so this must be measured, not assumed).
+`timm` **is now installed** (1.0.28 — it was already declared in `requirements.txt`; only the env
+lagged). No real or proxy frames are on disk, so the bake-off still cannot run.
+
+- [ ] Backbone bake-off — needs GPU + a real corpus. AngioCAD (16.4 GB RAR, 3.4 TB extracted) is the
+  proxy and is **not downloaded**; a selective-extraction strategy has to be planned first.
+- [ ] `cadica_to_cls.py` (Task 8 remainder)
+- [ ] The learned-modality half of B3 — until it exists the `avf_fistulography` registry entry is
+  unreachable, because the validity gate always returns its configured `validity.modality`.
 
 ---
 
@@ -277,7 +295,7 @@ Plan: [`2026-08-13-model-one-classifier-scaffold.md`](superpowers/plans/2026-08-
 | `stenosis_yolo.yaml` | `f1: 0.57, recall: 0.60` | **not met** (0.291/0.271); floor itself contested |
 | `edge_export.yaml` | `cldice_drop_max: 0.03` | **met** for CoreML; static PTQ now matches the declared `method: static_ptq` |
 | `avf_fistulography.yaml` | `sensitivity: null, specificity: null` | **floors unsigned** — code treats null as "not signed off" |
-| `orchestrator.yaml` | `floor_ok: true` (coronary seg) | **rewritten 2026-08-16**: `validity:` gate block replaces `router:`; registers the gate-passed seg model. Stenosis deliberately unregistered (below floor) |
+| `orchestrator.yaml` | `floor_ok: true` (coronary seg) | **rewritten 2026-08-16**: `validity:` gate block replaces `router:`; registers the gate-passed seg model. Stenosis deliberately unregistered (below floor). **2026-08-24:** `avf_fistulography` (`task: cls`, `floor_ok: false`) added — declared wiring only; the gate always returns `validity.modality`, so nothing resolves to it yet |
 | `ingest_clearance.yaml` | — | **both flags false** (the legal gate) |
 | `ingest_sites.yaml` | — | `drive_roots: []`; a test asserts it stays B5-safe |
 | `catheter_track.yaml` | **none** | no `target:` block at all |
@@ -289,9 +307,9 @@ Plan: [`2026-08-13-model-one-classifier-scaffold.md`](superpowers/plans/2026-08-
 
 ---
 
-## 6. Test suite — 621 passing, 42 files (verified 2026-08-15)
+## 6. Test suite — **836 passing, 52 files** (verified 2026-08-24)
 
-Trajectory this month: 374 (main, pre-ingest) → 470 (ingest tasks 1–5) → 572 (tasks 7–12 + robustness) → 616 (tasks 13–15) → 641 (P0.1) → 642 (task 16) → **606** (video path deleted, −49 +7) → 621 (static PTQ +6, events +15, minus concurrent churn).
+Trajectory: 374 (main, pre-ingest) → 470 (ingest tasks 1–5) → 572 (tasks 7–12 + robustness) → 616 (tasks 13–15) → 641 (P0.1) → 642 (task 16) → **606** (video path deleted, −49 +7) → 621 (static PTQ +6, events +15) → 702/768 (stenosis audit rounds 2–3) → 800 (AngioCAD adapter +32) → **836** (Model One scaffold +36).
 
 Ingest coverage: clearance, manifest, scan, index, fixture, deid (53), pixel_deid (11), extract (16), labels (15), link (11), doctor (18), group_key (13). Serve coverage: orchestrator, analyze endpoint, diagnosis, registry, report, router, triage, events (15). 52 warnings, all pre-existing (pydicom VR format, unclosed-file ResourceWarnings in `test_registry.py`).
 
@@ -348,7 +366,7 @@ For validating code, the backbone bake-off, and GPU workflow on real X-ray angio
 4. **Approve the Model One plan** (± Task 8 adapters) and pick an execution style.
 
 **Buildable now, no blockers:**
-5. Model One scaffold, tasks 1–7 (synthetic-data-testable end to end)
+5. ~~Model One scaffold, tasks 1–7~~ — **DONE 2026-08-24** (836 tests). Next on this track: the backbone bake-off, which needs GPU + real or proxy frames (AngioCAD is the proxy corpus and is not downloaded yet)
 6. Proxy training path: AngioCAD adapter → train → CARDIAG external test (needs Kaggle/Colab GPU)
 7. `pip install timm`; decide router-vs-validity-gate
 8. AVF audio proof-of-concept on the open figshare set (replaces the `train_audio.py` stub)
@@ -387,6 +405,12 @@ Catalogued 2026-08-09, several still open as of this update:
 ---
 
 ## 10. Changelog — entries since the 2026-08-13 rebuild
+
+- **2026-08-24** — **Model One scaffold built: the classifier path exists end-to-end, on synthetic data only.** All 7 tasks of [`2026-08-13-model-one-classifier-scaffold.md`](superpowers/plans/2026-08-13-model-one-classifier-scaffold.md) executed TDD; suite **800 → 836**. NEW `src/eval/cls_metrics.py` (62), `src/models/frozen_backbone.py` (53), `src/train/train_classifier.py` (185), `src/serve/infer_cls.py` (40), plus `cls_to_finding`/`_load_cls`/the orchestrator `cls` branch, the `avf_fistulography` registry entry, and `make train-avf-cls`. Proven composed: `train` → `head.pt` → `ClsModel` → `analyze_frame` returns a typed `avf_ja_stenosis` finding, and `model.inferred` was **verified** (not assumed) to carry `task: "cls"`. `timm` 1.0.28 installed — it was already in `requirements.txt`; only the env lagged.
+
+  **The plan was 11 days stale and three of its assumptions were wrong. One was a defect, not a drift.** (1) **Its Task 3 implementation fails its own Task 3 test, and the failure is the leakage bug this repo has now met three times.** `_AVF_RE` is anchored `^(avf_<site>_<pid10>)_s\d+_\d+$` — it matches FRAME stems. The labels JSONL key is a SERIES stem (`avf_inu_<pid>_s01`), which does not match, so `group_key` falls through to `return name` and hands back the **series**: one patient's two studies would land in different splits, and a group-overlap audit would certify it clean, exactly as it did for CADICA in 2026-08-16 and for AVF frames in P0.2. Fixed by reconstructing the frame stem the ingest writer itself emits (`extract.frame_stem`) before grouping, with an explicit fallback so an unknown stem grammar degrades to one group per *series* and never to one group per *frame*. Pinned by a new test (`test_two_series_from_one_patient_collapse_to_one_group`) that the plan's code fails. (2) `src.serve.router` was deleted 2026-08-16; `ModalityDecision` now lives in `src/serve/validity.py` — the plan's Task 6/7 test imports were stale. (3) The plan's `else: seg_to_finding(...)` fallthrough silently relabelled a cls `"defer-band"` as seg's `"low-confidence"`; caught by a test written to look for exactly that, fixed with an explicit three-way branch.
+
+  **What this does NOT mean.** Nothing has been trained on a real image. B5/B9 remain unexecuted, no AVF frames exist, the backbone bake-off is unrun (`test-tiny` is a 32-dim seeded conv — never a real backbone), and B7 floors are `null`, so the registry entry ships `floor_ok: false` and **every AVF finding defers by construction**. The registry entry is also **unreachable**: the decision source is a validity gate, not a modality discriminator, so it always returns its configured `validity.modality` (`coronary_angiography`) and `resolve()` never lands on AVF. The entry declares wiring, not capability. One honest artifact of the synthetic setup worth recording: on perfectly separable toy data `temperature_scale` drives T to its search floor (0.05), so ECE reads 0.20 at AUROC 1.0 — a property of the toy data, not a calibration bug, and a reminder that these numbers are plumbing evidence and nothing else.
 
 - **2026-08-23 (b)** — **AngioCAD verified and its adapter landed: the proxy path is classification, not detection.** Settled AngioCAD's format for **43 kB** instead of downloading 16.4 GB — pulled `AngioCAD_Labels.xlsx` from Zenodo `10.5281/zenodo.15826856` and read it. **It has NO bounding boxes**, contradicting secondary sources: it is one row per patient, 413 rows x 18 columns, carrying a 7-grade severity (`NL`/`1-25`/`26-50`/`51-75`/`76-90`/`91-99`/`100`) for each of 15 named segments plus the per-side video-series numbers. The 43 kB file size was itself the tell — per-frame boxes for 413 videos cannot fit. **Consequence: AngioCAD cannot train the YOLO detector**, so "more patients for the detector" and "reformulate as a study-level classifier" collapse into the SAME path; the label format forces it. That also makes the work dual-use, since a study-level classifier is the machinery Model One (AVF) needs anyway. NEW `src/data_prep/angiocad_to_cls.py` + 32 tests. **Its core job is a correctness constraint:** a video shows ONE coronary side, and **83 of 413 patients (20%) have disease on one side and a wholly normal other side**, so per-video labels are restricted to the segments that view actually shows (resolved from the sheet's own Right/Left Coronary Series columns; an unlisted series is refused, never guessed). Measured on the real sheet: **376 of 2,644 videos (14.2%) are negative despite their patient being diseased** — precisely what a naive patient-level label would have corrupted, the same class of error as A1a. Output is **2,644 videos / 413 patients** (~10x CADICA's 42), 63.8% positive at a 50% cut and 57.6% at 70%, `group_key` = patient so splits stay patient-grouped. Segment-level is the model target and patient-level is derived as `any(segment)`, so one model serves both granularities. **Still open: the significance threshold (50% vs 70%) is a CLINICAL choice for Dr. Reddy**, not ours — it belongs with the correction in `REDDY_CORRECTION_2026-08-23.md`.
 

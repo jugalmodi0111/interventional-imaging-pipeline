@@ -318,6 +318,52 @@ def test_analyze_frame_model_unavailable_skips_audit(monkeypatch):
     assert calls == []
 
 
+# --- Model One: the cls task path -------------------------------------------------------------
+
+
+def _cls_entry(floor_ok=True, model_path="head.pt"):
+    return TaskEntry("avf_fistulography", "cls", model_path, "AVF fistulography",
+                     "avf_ja_stenosis", "Possible juxta-anastomotic stenosis", floor_ok=floor_ok)
+
+
+def test_cls_modality_flows_through_analyze_frame(monkeypatch):
+    import numpy as np
+    monkeypatch.setattr(orch_mod, "record", lambda *a, **k: None)
+    router = FakeRouter(ModalityDecision("avf_fistulography", None, True, 0.9, False, "confident"))
+
+    def cls_factory(e):
+        return lambda frame: {"prob": 0.9, "confidence": 0.9, "deferred": False,
+                              "reason": "confident", "threshold": 0.5}
+    orch = DiagnosticOrchestrator(router, {"avf_fistulography": _cls_entry()}, cls_factory)
+    report = orch.analyze_frame(np.zeros((16, 16), np.uint8))
+    assert report.findings[0].label == "avf_ja_stenosis" and not report.deferred
+
+
+def test_cls_result_is_not_routed_through_the_seg_branch(monkeypatch):
+    """Before the cls branch existed, `else: seg_to_finding(...)` swallowed every non-det task. A
+    cls dict has no 'confidence'-plus-'deferred' seg contract quirk to catch it, so a mis-branch
+    would silently mislabel the reason -- pin the cls reason, which only cls_to_finding produces."""
+    import numpy as np
+    monkeypatch.setattr(orch_mod, "record", lambda *a, **k: None)
+    router = FakeRouter(ModalityDecision("avf_fistulography", None, True, 0.9, False, "confident"))
+
+    def cls_factory(e):
+        return lambda frame: {"prob": 0.45, "confidence": 0.55, "deferred": True,
+                              "reason": "defer-band", "threshold": 0.5}
+    orch = DiagnosticOrchestrator(router, {"avf_fistulography": _cls_entry()}, cls_factory)
+    report = orch.analyze_frame(np.zeros((16, 16), np.uint8))
+    assert report.deferred and report.findings[0].reason == "defer-band"
+
+
+def test_unknown_cls_checkpoint_defers_model_unavailable():
+    import numpy as np
+    import pytest as _pytest
+    from src.serve.orchestrator import _model_factory
+    model = _model_factory(_cls_entry(model_path="definitely/absent/head.pt"))
+    with _pytest.raises(orch_mod.ModelUnavailable):
+        model(np.zeros((8, 8), dtype=np.uint8))
+
+
 # --- import-safety guardrail: importing this module must never pull in torch/ultralytics/coremltools
 
 def test_orchestrator_module_imports_without_torch():
@@ -336,3 +382,23 @@ def test_orchestrator_module_imports_without_torch():
     r = subprocess.run([sys.executable, "-c", code], cwd=repo_root,
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_cls_finding_is_mirrored_on_the_event_bus(monkeypatch):
+    """The publish site is task-agnostic, so `model.inferred` should carry task='cls'. Asserted,
+    not assumed -- the event stream is the only observability the hosted deployment has (B8)."""
+    import numpy as np
+    from src.serve.events import EventBus
+    monkeypatch.setattr(orch_mod, "record", lambda *a, **k: None)
+    seen = []
+    bus = EventBus()
+    bus.subscribe("model.inferred", seen.append)
+    router = FakeRouter(ModalityDecision("avf_fistulography", None, True, 0.9, False, "confident"))
+
+    def cls_factory(e):
+        return lambda frame: {"prob": 0.9, "confidence": 0.9, "deferred": False,
+                              "reason": "confident", "threshold": 0.5}
+    orch = DiagnosticOrchestrator(router, {"avf_fistulography": _cls_entry()}, cls_factory, bus=bus)
+    orch.analyze_frame(np.zeros((16, 16), np.uint8))
+    assert [e["data"]["task"] for e in seen] == ["cls"]
+    assert seen[0]["data"]["finding_label"] == "avf_ja_stenosis"

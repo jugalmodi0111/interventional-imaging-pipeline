@@ -60,3 +60,23 @@ def study_defer(decision, findings):
         if f.deferred:
             return True, f.reason
     return False, ""
+
+
+def cls_to_finding(entry, cls_res):
+    """Classifier result dict -> one Finding. Same fail-safe grammar as det/seg: a result missing
+    'prob' or 'deferred' is malformed input (defer, never a confident negative); a below-floor
+    entry defers regardless of confidence (the floor is the clinical gate, not the model's mood).
+
+    A confident NEGATIVE still returns a Finding rather than nothing: an empty findings list means
+    'nothing screened this study' to study_defer, which is a different claim from 'screened, clean'.
+    """
+    if not entry.floor_ok:
+        return Finding(label=entry.finding_label, display_name=entry.finding_display,
+                       confidence=0.0, deferred=True, reason="below-floor", boxes=[])
+    if "prob" not in cls_res or "deferred" not in cls_res:
+        return Finding(label=entry.finding_label, display_name=entry.finding_display,
+                       confidence=0.0, deferred=True, reason="malformed-cls", boxes=[])
+    return Finding(label=entry.finding_label, display_name=entry.finding_display,
+                   confidence=float(cls_res.get("confidence", 0.0)),
+                   deferred=bool(cls_res["deferred"]),
+                   reason=str(cls_res.get("reason", "confident")), boxes=[])

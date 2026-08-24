@@ -147,11 +147,14 @@ Ordered by dependency:
 - [ ] **T1.3** `configs/avf_fistulography.yaml` — Model One: `segment: juxta_anastomotic`,
       `task: binary_classification`, frozen backbone id, linear head, `split: patient`,
       `metrics: [sensitivity, specificity, auroc, ece]`. No Dice, no mAP.
-- [ ] **T1.4** Frozen-backbone classification path — `src/models/frozen_backbone.py` +
-      `src/train/train_classifier.py`, TDD, heavy imports lazy (repo convention). **Net-new
-      capability**; requires adding `timm` to `requirements.txt` (`transformers` already present at
-      `requirements.txt:22`). Make the backbone id a config field so DINOv2 / RAD-DINO / BiomedCLIP
-      can be compared rather than assumed — see conflict 3.11.
+- [x] **T1.4** Frozen-backbone classification path — **code-complete 2026-08-24**.
+      `src/models/frozen_backbone.py` + `src/train/train_classifier.py` (+ `src/eval/cls_metrics.py`,
+      `src/serve/infer_cls.py`, orchestrator `cls` branch), TDD, heavy imports lazy. `timm` is in
+      `requirements.txt` and now installed (1.0.28). The backbone id IS a parameter
+      (`--backbone` / `make train-avf-cls ARGS=...`), so DINOv2 / RAD-DINO / BiomedCLIP can be
+      compared rather than assumed — but the bake-off itself is **not run**: it needs GPU and a real
+      or proxy corpus, and none is on disk. Trained on synthetic data only; floors unsigned, so the
+      registry entry ships `floor_ok: false`. See PROJECT_TRACKER §4.7 + the 2026-08-24 changelog.
 - [ ] **T1.4b** Fill `docs/HOSTING_QUESTIONNAIRE.md` (currently 1 byte). B8's hosted/central
       serving posture cannot be designed without it.
 - [ ] **T1.5** Orchestrator Phase C — `report.py` / `registry.py` / `diagnosis.py`. Pure logic, fully

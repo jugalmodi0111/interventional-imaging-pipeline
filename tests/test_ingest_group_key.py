@@ -147,3 +147,27 @@ def test_audit_avf_ungrouped_names_raise(tmp_path):
     tmp = _write_split(str(tmp_path), train_stems=bad[:14], val_stems=bad[14:])
     with pytest.raises(AssertionError, match="UNGROUPED AVF"):
         audit_split_leakage(tmp, avf_stems=bad)
+
+
+# --- AngioCAD: the proxy corpus's own stem grammar ------------------------------------------------
+
+def test_angiocad_frames_collapse_to_the_patient_not_the_series():
+    """AngioCAD videos are one row per (patient, series) and a patient has SEVERAL series -- 277 of
+    413 patients have videos on both coronary sides. Without a rule here group_key falls through to
+    `return name` and groups per SERIES, scattering one patient's studies across train and val. That
+    is the P0.2 / CADICA-2026-08-16 / AVF-2026-08-24 bug for a fourth time, and the proxy corpus is
+    where it would land next."""
+    stems = [f"angiocad_7_s{s:02d}_{f:05d}" for s in (1, 2, 9) for f in range(4)]
+    assert {group_key(s) for s in stems} == {"angiocad_7"}
+
+
+def test_angiocad_patients_stay_distinct():
+    assert group_key("angiocad_7_s01_00000") != group_key("angiocad_70_s01_00000")
+    assert group_key("angiocad_413_s07_00003") == "angiocad_413"
+
+
+def test_angiocad_rule_does_not_over_collapse_foreign_names():
+    """Anchored at both ends: a name that merely starts with 'angiocad' must fall through to itself
+    rather than being swept into a fake patient group."""
+    for odd in ("angiocad_notanumber_s01_00000", "angiocad_7_v01_00000", "angiocad_7_s01"):
+        assert group_key(odd) == odd
