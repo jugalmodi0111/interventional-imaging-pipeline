@@ -18,6 +18,20 @@ modalities:
     floor_ok: true         # gate PASSED: Dice 0.915 / clDice 0.956 vs the 0.75 floor
                            # (outputs/coronary_student_clgeodice/RESULTS.md); both edge paths
                            # clDice-gated (CoreML 6-bit, ONNX static INT8).
+  avf_fistulography:
+    task: cls
+    model_path: runs/avf_cls/head.pt
+    display_name: AVF fistulography
+    finding_label: avf_ja_stenosis
+    finding_display: Possible juxta-anastomotic stenosis (triage aid; clinician review required)
+    floor_ok: false        # B7 floors UNSIGNED (configs/avf_fistulography.yaml target: null), so
+                           # every finding from this entry defers. Do not flip to true on a metric;
+                           # flip it when Dr. Reddy signs a sensitivity/specificity floor.
+                           # NOTE: this entry is UNREACHABLE today. The decision source is a
+                           # validity gate, not a modality discriminator -- it always returns
+                           # `validity.modality` above (coronary_angiography), so resolve() never
+                           # lands here. The entry declares the wiring; the learned-modality half
+                           # of B3 stays open until real data clears B5.
 # Stenosis detection is deliberately NOT registered. It sits at F1 0.291 / recall 0.271 against a
 # 0.57/0.60 floor, and its 2026-07-16 split accounting was wrong (PROJECT_TRACKER §4.5). Registering
 # it with floor_ok:false would make every /analyze response defer on its account, masking the one

@@ -11,6 +11,10 @@ train-stenosis:
 	$(PY) -m src.train.train_detector --config configs/stenosis_yolo.yaml
 train-avf-audio:
 	$(PY) -m src.train.train_audio --config configs/avf_audio.yaml
+# Model One head: default --backbone is test-tiny, the OFFLINE TEST backbone. A real run passes
+# ARGS=--backbone dinov2_vitb14 --imgsz 224 and is gated on B5/B9 (no real frames exist yet).
+train-avf-cls:            # FRAMES=<frame store> LABELS=<labels.jsonl> OUT=<dir> [ARGS=...]
+	$(PY) -m src.train.train_classifier --frames $(FRAMES) --labels $(LABELS) --out $(OUT) $(ARGS)
 export:
 	$(PY) -m src.export.to_onnx --weights $(MODEL)
 	$(PY) -m src.export.quantize_int8 --model $(MODEL:.pt=.onnx)

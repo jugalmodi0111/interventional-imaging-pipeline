@@ -24,6 +24,12 @@ _CLIP_RE = re.compile(r"^(.+?)_img-\d+-\d+$")
 # pseudo-id pinned to exactly 10 hex chars: tight enough that a near-miss stem falls through to
 # itself rather than over-collapsing unrelated names into one giant fake 'patient'.
 _AVF_RE = re.compile(r"^(avf_[a-z0-9]+_[0-9a-f]{10})_s\d+_\d+$")
+# AngioCAD proxy corpus (notebooks/kaggle_angiocad_acquire.py stem grammar): angiocad_<patient>_s<NN>_<FFFFF>.
+# A patient has SEVERAL series -- 277 of 413 have videos on both coronary sides -- so without this
+# rule group_key falls through to `return name` and groups per SERIES, scattering one patient across
+# train and val. Anchored at both ends with a numeric patient id for the same reason _AVF_RE is:
+# a near-miss must fall through to itself rather than over-collapse into a fake patient.
+_ANGIOCAD_RE = re.compile(r"^(angiocad_\d+)_s\d+_\d+$")
 
 
 def group_key(name):
@@ -38,8 +44,12 @@ def group_key(name):
         CADICA     p<patient>_v<video>_<frame>      p12_v3_00045                  -> p12
         CathAction <clip>_img-<seg>-<frame>         JFQ_j3383201_img-00000-0042   -> JFQ_j3383201
         AVF        avf_<site>_<pid10>_s<NN>_<FFFFF> avf_inu_3f9c21b04e_s01_00012  -> avf_inu_3f9c21b04e
+        AngioCAD   angiocad_<patient>_s<NN>_<FFFFF> angiocad_7_s02_00003          -> angiocad_7
     """
     m = _AVF_RE.match(name)
+    if m:
+        return m.group(1)
+    m = _ANGIOCAD_RE.match(name)
     if m:
         return m.group(1)
     m = _PATIENT_RE.match(name)

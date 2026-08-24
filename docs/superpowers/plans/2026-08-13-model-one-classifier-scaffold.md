@@ -1,5 +1,23 @@
 # Model One AVF Classifier Scaffold — Implementation Plan
 
+> **EXECUTED 2026-08-24 — suite 800 → 836. Three of this plan's assumptions were wrong; the code
+> blocks below are the AS-WRITTEN plan, not the as-shipped repo. Read `src/` for what shipped.**
+>
+> 1. **Task 3's implementation fails Task 3's own test, and the failure is a leakage bug. DO NOT
+>    COPY IT.** `group_key` is anchored against FRAME stems (`_AVF_RE`: `..._s\d+_\d+$`); the
+>    labels-JSONL `key` is a SERIES stem, so `group_key(stem)` returns the **series**, splitting one
+>    patient's two studies across train and val — the P0.2 / CADICA-2026-08-16 bug, third occurrence.
+>    Shipped fix: reconstruct the frame stem via `src.ingest.extract.frame_stem` before grouping,
+>    with a fallback to the series key so an unknown grammar never degrades to one group per frame.
+> 2. `src.serve.router` was deleted 2026-08-16 — `ModalityDecision` is in `src/serve/validity.py`.
+>    Tasks 6/7 test imports below are stale.
+> 3. Task 6's `else: seg_to_finding(...)` fallthrough relabels a cls `"defer-band"` as seg's
+>    `"low-confidence"`. Shipped as an explicit three-way branch, pinned by a test.
+>
+> Also: the "621 passed" baseline was stale (actual 800). `temperature_scale` returns a bare float,
+> resolving the plan's flagged Task 4 risk. See PROJECT_TRACKER §4.7 + the 2026-08-24 changelog.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the complete code path for Dialygo Model One — a frozen-backbone binary classifier (normal vs. significant juxta-anastomotic stenosis) — training, classification metrics, calibrated+thresholded inference, and orchestrator wiring, all runnable and tested on synthetic data before any real frame exists.
@@ -52,7 +70,7 @@
   - `threshold_at_sensitivity(probs, labels, target) -> float` — the HIGHEST threshold whose sensitivity ≥ target; `0.5` when `target is None`; `0.0` when even threshold 0 can't reach target
   - `bootstrap_ci(metric_fn, probs, labels, n_boot=1000, seed=0, alpha=0.05) -> (lo, hi)`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """Binary classification metrics for Model One (B3). Pure numpy — no torch anywhere.
@@ -103,9 +121,9 @@ def test_bootstrap_ci_brackets_the_point_estimate_and_is_deterministic():
     assert lo <= sensitivity(PROBS, LABELS, 0.5) <= hi
 ```
 
-- [ ] **Step 2: Run to verify failure** — `python -m pytest tests/test_cls_metrics.py -q` → collection error `No module named 'src.eval.cls_metrics'`.
+- [x] **Step 2: Run to verify failure** — `python -m pytest tests/test_cls_metrics.py -q` → collection error `No module named 'src.eval.cls_metrics'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 """Binary classification metrics for Model One triage (B3 vocabulary: sensitivity/specificity).
@@ -172,8 +190,8 @@ def bootstrap_ci(metric_fn, probs, labels, n_boot=1000, seed=0, alpha=0.05, thr=
     return (float(np.quantile(stats, alpha / 2)), float(np.quantile(stats, 1 - alpha / 2)))
 ```
 
-- [ ] **Step 4: Run to verify pass** — `python -m pytest tests/test_cls_metrics.py -q` → 6 passed.
-- [ ] **Step 5: Full suite** — `python -m pytest tests/ -q` → 627 passed (621 + 6).
+- [x] **Step 4: Run to verify pass** — `python -m pytest tests/test_cls_metrics.py -q` → 6 passed.
+- [x] **Step 5: Full suite** — `python -m pytest tests/ -q` → 627 passed (621 + 6).
 
 ---
 
@@ -189,7 +207,7 @@ def bootstrap_ci(metric_fn, probs, labels, n_boot=1000, seed=0, alpha=0.05, thr=
   - `make_backbone(name, imgsz=224) -> (torch.nn.Module, int)` — module maps `[B,1,imgsz,imgsz]` float in [0,1] → `[B, feat_dim]`; returns `(module, feat_dim)`. `name="test-tiny"` = deterministic offline backbone (seeded conv+pool, feat_dim 32). Any other name: `import timm`, `timm.create_model(name, pretrained=True, num_classes=0, in_chans=1)`.
   - `FrozenBackboneClassifier(backbone_name, imgsz=224)` — torch module; `.backbone` frozen (`requires_grad=False`, eval mode), `.head = nn.Linear(feat_dim, 1)`; `forward(x) -> logits [B]`; `.trainable_parameters()` yields head params only.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """Frozen-backbone classifier (B4): the backbone never trains, only the linear head does.
@@ -238,9 +256,9 @@ def test_head_learns_while_backbone_stays_fixed():
     assert all(torch.equal(a, b) for a, b in zip(before, m.backbone.parameters()))
 ```
 
-- [ ] **Step 2: Run to verify failure** — `python -m pytest tests/test_frozen_backbone.py -q` → `No module named 'src.models.frozen_backbone'`.
+- [x] **Step 2: Run to verify failure** — `python -m pytest tests/test_frozen_backbone.py -q` → `No module named 'src.models.frozen_backbone'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 """Frozen foundation backbone + lightweight trained head (Dialygo B4).
@@ -298,8 +316,8 @@ class FrozenBackboneClassifier(nn.Module):
         return self.head(feats).squeeze(-1)
 ```
 
-- [ ] **Step 4: Run to verify pass** — 4 passed.
-- [ ] **Step 5: Full suite** — 631 passed.
+- [x] **Step 4: Run to verify pass** — 4 passed.
+- [x] **Step 5: Full suite** — 631 passed.
 
 ---
 
@@ -315,7 +333,7 @@ class FrozenBackboneClassifier(nn.Module):
   - `load_examples(frames_root, labels_path) -> list[dict]` — one dict per FRAME: `{"path": str, "stem": str, "group": str, "label": int}`; stems present in labels but missing on disk are skipped with a count; frames with no label are skipped.
   - `grouped_split(examples, val_frac=0.2, seed=0) -> (train, val)` — split by `group`, never by frame; deterministic; raises `AssertionError` on any group overlap (self-check, B5).
 
-- [ ] **Step 1: Write the failing tests** (build a tiny synthetic frame store with PIL-free cv2 writes)
+- [x] **Step 1: Write the failing tests** (build a tiny synthetic frame store with PIL-free cv2 writes)
 
 ```python
 """Trainer scaffolding: dataset loading + the patient-grouped split (B5: split by patient, never
@@ -376,9 +394,9 @@ def test_grouped_split_is_deterministic(tmp_path):
     assert [e["path"] for e in a[1]] == [e["path"] for e in b[1]]
 ```
 
-- [ ] **Step 2: Verify failure** — `No module named 'src.train.train_classifier'`.
+- [x] **Step 2: Verify failure** — `No module named 'src.train.train_classifier'`.
 
-- [ ] **Step 3: Implement (module top + these two functions)**
+- [x] **Step 3: Implement (module top + these two functions)**
 
 ```python
 """Train Model One: frozen-backbone binary classifier over the de-identified AVF frame store.
@@ -428,8 +446,8 @@ def grouped_split(examples, val_frac=0.2, seed=0):
     return train, val
 ```
 
-- [ ] **Step 4: Verify pass** — 4 passed.
-- [ ] **Step 5: Full suite green.**
+- [x] **Step 4: Verify pass** — 4 passed.
+- [x] **Step 5: Full suite green.**
 
 ---
 
@@ -448,7 +466,7 @@ def grouped_split(examples, val_frac=0.2, seed=0):
   - CLI: `python -m src.train.train_classifier --frames F --labels L --out O [--backbone B] [--imgsz N] [--epochs N] [--val-frac F] [--seed N] [--target-sensitivity F]`
 - `defer_band` is copied verbatim from `configs/avf_fistulography.yaml` `defer.band` (`[0.3, 0.6]`) — read the YAML; if unreadable, default `[0.3, 0.6]` with a warning.
 
-- [ ] **Step 1: Write the failing tests** (tiny end-to-end run on `test-tiny`, separable classes so it learns)
+- [x] **Step 1: Write the failing tests** (tiny end-to-end run on `test-tiny`, separable classes so it learns)
 
 ```python
 def test_train_end_to_end_writes_artifacts_and_learns(tmp_path):
@@ -491,9 +509,9 @@ def test_cli_smoke(tmp_path, capsys):
     assert rc == 0 and (tmp_path / "o" / "metrics.json").exists()
 ```
 
-- [ ] **Step 2: Verify failure** — `ImportError: cannot import name 'train'`.
+- [x] **Step 2: Verify failure** — `ImportError: cannot import name 'train'`.
 
-- [ ] **Step 3: Implement** (append to module; key structure below — implementer writes it exactly)
+- [x] **Step 3: Implement** (append to module; key structure below — implementer writes it exactly)
 
 ```python
 def _load_gray(path, imgsz):
@@ -589,8 +607,8 @@ train-avf-cls:  ## Train Model One head (synthetic/test data until B5 clears rea
 
 **Note on `temperature_scale`:** read its actual return in `src/eval/calibration.py:85` before wiring — if it returns `(T, …)` rather than bare `T`, unpack accordingly; the test asserting `0 < ckpt["temperature"]` catches a mis-wire.
 
-- [ ] **Step 4: Verify pass** — 3 more passed (7 total in file).
-- [ ] **Step 5: Full suite green.**
+- [x] **Step 4: Verify pass** — 3 more passed (7 total in file).
+- [x] **Step 5: Full suite green.**
 
 ---
 
@@ -605,7 +623,7 @@ train-avf-cls:  ## Train Model One head (synthetic/test data until B5 clears rea
 - Produces: `ClsModel(path)` — construction loads checkpoint + backbone (raises on failure; the orchestrator's `_load_cls` wraps that into `ModelUnavailable`, Task 6). `__call__(frame_gray_uint8) -> dict`:
   `{"prob": float, "confidence": float, "deferred": bool, "reason": str}` where `confidence = max(prob, 1-prob)`, `deferred=True` with `reason="defer-band"` when `defer_band[0] <= prob <= defer_band[1]`, else `reason="confident"`. Threshold is carried through as `"threshold"` in the dict for the diagnosis layer.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """Hosted torch inference for Model One. Trains nothing; loads Task 4's head.pt and mirrors B3:
@@ -645,9 +663,9 @@ def test_missing_checkpoint_raises_at_construction(tmp_path):
         ClsModel(tmp_path / "absent.pt")
 ```
 
-- [ ] **Step 2: Verify failure** — `No module named 'src.serve.infer_cls'`.
+- [x] **Step 2: Verify failure** — `No module named 'src.serve.infer_cls'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 """Hosted torch inference for Model One (B8: central serving; this is NOT the CoreML edge path).
@@ -692,8 +710,8 @@ class ClsModel:
                 "threshold": self.threshold}
 ```
 
-- [ ] **Step 4: Verify pass** — 3 passed.
-- [ ] **Step 5: Full suite green.** Also confirm import-safety: `python -c "import src.serve.infer_cls"` must not import torch at module scope (it doesn't — torch only inside methods).
+- [x] **Step 4: Verify pass** — 3 passed.
+- [x] **Step 5: Full suite green.** Also confirm import-safety: `python -c "import src.serve.infer_cls"` must not import torch at module scope (it doesn't — torch only inside methods).
 
 ---
 
@@ -711,7 +729,7 @@ class ClsModel:
   - `cls_to_finding(entry, cls_res) -> Finding` — malformed input (missing `prob`/`deferred`) → deferred `reason="malformed-cls"`; `entry.floor_ok` False → deferred `reason="below-floor"` (mirrors `det_to_findings`); positive call (`prob >= threshold`) or defer-band → deferred/kept accordingly, `confidence=cls_res["confidence"]`, `boxes=[]`.
   - Orchestrator: `entry.task == "cls"` → `findings = [cls_to_finding(entry, out)]`; `_model_factory` builds `ClsModel` lazily with the same fail-safe closure shape as `_load_det`.
 
-- [ ] **Step 1: Write failing tests for `cls_to_finding`** (`tests/test_cls_finding.py`)
+- [x] **Step 1: Write failing tests for `cls_to_finding`** (`tests/test_cls_finding.py`)
 
 ```python
 """cls output -> Finding. Same fail-safe grammar as det/seg: malformed input and below-floor both
@@ -776,9 +794,9 @@ def test_unknown_cls_checkpoint_defers_model_unavailable():
         model(np.zeros((8, 8), dtype=np.uint8))
 ```
 
-- [ ] **Step 2: Verify failures** — `cannot import name 'cls_to_finding'`; orchestrator cls test fails on unknown-task `ModelUnavailable`.
+- [x] **Step 2: Verify failures** — `cannot import name 'cls_to_finding'`; orchestrator cls test fails on unknown-task `ModelUnavailable`.
 
-- [ ] **Step 3: Implement.** `diagnosis.py` (mirror the docstring register of `det_to_findings`/`seg_to_finding`):
+- [x] **Step 3: Implement.** `diagnosis.py` (mirror the docstring register of `det_to_findings`/`seg_to_finding`):
 
 ```python
 def cls_to_finding(entry, cls_res):
@@ -833,8 +851,8 @@ and in `_model_factory` add the branch `if entry.task == "cls": return _load_cls
     floor_ok: false
 ```
 
-- [ ] **Step 4: Verify pass** — 4 + 2 new tests pass.
-- [ ] **Step 5: Full suite green.** Also rerun the event tests (`tests/test_serve_events.py`) — `model.inferred` must fire for cls findings with `task: "cls"` in the payload (it will: the publish site is task-agnostic).
+- [x] **Step 4: Verify pass** — 4 + 2 new tests pass.
+- [x] **Step 5: Full suite green.** Also rerun the event tests (`tests/test_serve_events.py`) — `model.inferred` must fire for cls findings with `task: "cls"` in the payload (it will: the publish site is task-agnostic).
 
 ---
 
@@ -846,7 +864,7 @@ and in `_model_factory` add the branch `if entry.task == "cls": return _load_cls
 
 **Interfaces:** none new — this task proves Tasks 1–6 compose.
 
-- [ ] **Step 1: Write the failing integration test**
+- [x] **Step 1: Write the failing integration test**
 
 ```python
 def test_trained_head_serves_through_the_orchestrator(tmp_path, monkeypatch):
@@ -882,9 +900,9 @@ def test_trained_head_serves_through_the_orchestrator(tmp_path, monkeypatch):
     # The claim under test is the PLUMBING: trained artifact -> real factory -> typed finding.
 ```
 
-- [ ] **Step 2: Verify it fails only if plumbing is broken** — run it; with Tasks 1–6 done it should PASS immediately. If it fails, that's a real seam bug — fix the seam, not the test. (This is the one deliberately-green test in the plan: it's an integration proof, written after its parts were TDD'd individually.)
-- [ ] **Step 3: Tracker** — add a changelog entry to `docs/PROJECT_TRACKER.md`: date, "Model One scaffold: cls metrics, frozen-backbone trainer, hosted ClsModel, orchestrator cls path — all synthetic-tested; real training blocked on B5/B9 + backbone bake-off; floors unsigned so registry ships floor_ok: false". Update the §2 inventory row for `src/train/` (train_classifier.py real) and note T1.4 code-complete in the realignment cross-reference.
-- [ ] **Step 4: Full suite** — `python -m pytest tests/ -q` → expected ≈ 621 + 6 + 4 + 4 + 3 + 3 + 6 + 1 = 648 passed (exact count recorded by implementer; arithmetic is advisory, actual governs).
+- [x] **Step 2: Verify it fails only if plumbing is broken** — run it; with Tasks 1–6 done it should PASS immediately. If it fails, that's a real seam bug — fix the seam, not the test. (This is the one deliberately-green test in the plan: it's an integration proof, written after its parts were TDD'd individually.)
+- [x] **Step 3: Tracker** — add a changelog entry to `docs/PROJECT_TRACKER.md`: date, "Model One scaffold: cls metrics, frozen-backbone trainer, hosted ClsModel, orchestrator cls path — all synthetic-tested; real training blocked on B5/B9 + backbone bake-off; floors unsigned so registry ships floor_ok: false". Update the §2 inventory row for `src/train/` (train_classifier.py real) and note T1.4 code-complete in the realignment cross-reference.
+- [x] **Step 4: Full suite** — `python -m pytest tests/ -q` → expected ≈ 621 + 6 + 4 + 4 + 3 + 3 + 6 + 1 = 648 passed (exact count recorded by implementer; arithmetic is advisory, actual governs).
 
 ---
 
