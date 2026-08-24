@@ -163,24 +163,88 @@ def md5sum(path, chunk=1 << 22):
     return h.hexdigest()
 
 
-def fetch(key):
-    """Download one Zenodo file, skipping it when a byte-exact copy is already on disk.
+CHUNK = 8 << 20
 
-    Kaggle sessions die; re-running this cell must not re-pull 16 GB. Size is the cheap gate and
-    the MD5 from the record metadata is the real one — a truncated part only shows up as a
-    confusing archive error three cells later otherwise.
+
+def _h(n):
+    return f"{n / 1e9:.2f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
+
+
+def probe_speed(seconds=10):
+    """Measure Zenodo throughput BEFORE committing to 16.4 GB, and print the honest ETA.
+
+    Zenodo throttles per-IP, not per-connection (measured 2026-08-24: 0.52 MB/s on one connection,
+    0.83 MB/s summed across four), so parallelism buys ~1.6x at best and is not worth the
+    complexity. What matters is knowing early whether this run is 20 minutes or 9 hours, because
+    Kaggle caps a session at 12 h and a download that outlives it takes the whole run with it.
     """
-    f = files[key]
-    dest = DL / key
-    if dest.exists() and dest.stat().st_size == f["size"]:
-        print(f"  {key:38s} present ({f['size'] / 1e9:.2f} GB) — skipped")
-        return dest
-    print(f"  {key:38s} downloading {f['size'] / 1e9:.2f} GB ...", end="", flush=True)
-    t0 = time.time()
-    urllib.request.urlretrieve(f["links"]["self"], dest)
-    dt = time.time() - t0
-    print(f" done in {dt / 60:.1f} min ({f['size'] / 1e6 / max(dt, 1):.0f} MB/s)")
-    return dest
+    req = urllib.request.Request(files["AngioCAD_Dataset.part1.rar"]["links"]["self"],
+                                 headers={"Range": "bytes=0-209715200"})
+    t0, n = time.time(), 0
+    with urllib.request.urlopen(req, timeout=30) as r:
+        while time.time() - t0 < seconds:
+            b = r.read(1 << 20)
+            if not b:
+                break
+            n += len(b)
+    sp = n / max(time.time() - t0, 1e-9)
+    total = sum(f["size"] for f in files.values())
+    print(f"throughput probe : {sp / 1e6:.2f} MB/s -> {total / sp / 3600:.1f} h for {_h(total)}")
+    if total / sp > 8 * 3600:
+        print("  !! that exceeds a comfortable margin inside Kaggle's 12 h session cap.")
+        print("  !! consider stopping here rather than losing the session to a partial download.")
+    return sp
+
+
+def fetch(key, attempts=12):
+    """Resumable, progress-reporting download of one Zenodo file.
+
+    `urlretrieve` was wrong here twice over: it prints nothing for hours on a 4 GB part (so the run
+    is indistinguishable from hung), and it takes no timeout, so a stalled connection blocks
+    forever. This reads in chunks with a socket timeout and resumes with an HTTP Range request, so
+    a stall costs one retry instead of the whole file -- and a rerun after a dead session picks up
+    mid-file rather than restarting at zero.
+    """
+    f, dest = files[key], DL / key
+    total = f["size"]
+    for attempt in range(1, attempts + 1):
+        have = dest.stat().st_size if dest.exists() else 0
+        if have == total:
+            print(f"  {key:34s} complete ({_h(total)})")
+            return dest
+        if have > total:                       # corrupt/overlong leftover: start clean
+            dest.unlink()
+            have = 0
+        req = urllib.request.Request(f["links"]["self"])
+        if have:
+            req.add_header("Range", f"bytes={have}-")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                if have and r.status != 206:
+                    have = 0                   # server ignored Range -> it is streaming from 0
+                with open(dest, "ab" if have else "wb") as out:
+                    t0 = last = time.time()
+                    start = done = have
+                    while True:
+                        b = r.read(CHUNK)
+                        if not b:
+                            break
+                        out.write(b)
+                        done += len(b)
+                        now = time.time()
+                        if now - last >= 5:
+                            sp = (done - start) / max(now - t0, 1e-9)
+                            eta = (total - done) / sp if sp > 0 else 0
+                            print(f"\r  {key:34s} {100 * done / total:5.1f}%  "
+                                  f"{_h(done)}/{_h(total)}  {sp / 1e6:.1f} MB/s  "
+                                  f"ETA {eta / 60:.0f} min    ", end="", flush=True)
+                            last = now
+            print()
+        except Exception as e:
+            print(f"\n  {key}: attempt {attempt}/{attempts} broke "
+                  f"({type(e).__name__}: {e}) -- resuming from {_h(dest.stat().st_size if dest.exists() else 0)}")
+            time.sleep(min(5 * attempt, 30))
+    raise RuntimeError(f"{key}: gave up after {attempts} attempts")
 
 
 need = free_gb("/kaggle/temp")
@@ -188,6 +252,8 @@ want = sum(f["size"] for f in files.values()) / 1e9
 if need < want + 2:
     raise SystemExit(f"/kaggle/temp has {need:.1f} GB free, need ~{want + 2:.1f} GB for the archives.")
 
+probe_speed()
+print()
 paths = {k: fetch(k) for k in files}
 
 print("\nverifying checksums (the truncated-part failure mode is worth 2 minutes here) ...")
