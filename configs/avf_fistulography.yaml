@@ -2,9 +2,9 @@ task: avf_fistulography_triage                                   # Dialygo Model
 segment: juxta_anastomotic                                        # B2 build-order table: densest segment, built FIRST; not anastomosis/body/etc. (later stages)
 data: {root: data/raw/avf_fistulography}                          # institutional (Institute of Nephro-Urology) — GATED on the data-use agreement (B5); public/synthetic/own non-patient data only until it is signed
 input: {frame: single_still, format: png, deidentified: true, crop: segment, imgsz: 224}   # B3: one still angiographic frame per prediction, cropped to the segment; imgsz is what's fed to the backbone
-model: {backbone: dinov2_vitb14, frozen: true, head: linear}      # B4: frozen foundation backbone + lightweight trained head; sample-efficiency is the fixed requirement, not this specific backbone
+model: {backbone: vit_base_patch14_dinov2.lvd142m, frozen: true, head: linear}   # B4: frozen foundation backbone + lightweight trained head; sample-efficiency is the fixed requirement, not this specific backbone. NAME CORRECTED 2026-08-25: `dinov2_vitb14` is a torch.hub name and timm cannot build it (RuntimeError: Unknown model) -- it had never been exercised because every test used the offline `test-tiny` backbone
 # backbone bake-off candidates (edit model.backbone above; do not assume DINOv2 wins — plan §3.11 / STAGE_ACCURACY_RESEARCH.md):
-# model.backbone: dinov3_vitb16   # eventual target per B4, once available/licensed for the hosted deployment
+# model.backbone: vit_base_patch16_dinov3   # eventual target per B4; present in timm 1.0.28, verify licence for hosted deployment
 # model.backbone: rad_dino        # radiology-pretrained candidate
 # model.backbone: biomedclip      # biomedical-image-text candidate
 split: {by: patient}                                              # B5: patient-level split only — no patient may appear in both train and test

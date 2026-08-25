@@ -129,5 +129,34 @@ classifier is the same machinery Model One (AVF) needs, so the proxy path and th
 code rather than diverging. This retroactively confirms the tracker's proposed Task 8 name,
 `angiocad_to_cls.py`, was right.
 
-**Operational notes:** 4-part RAR needs `unrar`/`7z` (not stdlib); the record reports 3.4 TB extracted,
-so extraction must be selective, not wholesale.
+**Operational notes:** 4-part RAR needs `unrar`/`7z` (not stdlib).
+
+### MEASURED 2026-08-25 on Kaggle — the "3.4 TB extracted" figure was WRONG
+
+~~the record reports 3.4 TB extracted, so extraction must be selective, not wholesale~~ — struck,
+not deleted, because it governed planning for two days. It was **unsourced**: it appears nowhere in
+the Zenodo record, and PNG is already DEFLATE-compressed so a 200x expansion was never physically
+possible. Measured from the RAR headers without extracting
+(`notebooks/kaggle_angiocad_acquire.ipynb` Cell 3):
+
+| | measured |
+|---|---|
+| entries | **121,566**, all `.png` |
+| uncompressed | **16.37 GB** (archive on disk 16.40 GB) |
+| expansion ratio | **1.00x** |
+| claimed | 3.4 TB — a **208x** overstatement |
+| full extraction | **3.2 min**; `/kaggle/temp` had 1,102 GB free |
+
+**Extract wholesale. There is no selective-extraction problem.** Download is 37 min at Kaggle's
+5-16 MB/s (a 0.5 MB/s reading from a laptop is a local-network artifact, not Zenodo's ceiling).
+
+**Real layout — VERIFIED against the tree, not assumed:** `AngioCAD_Dataset/<patient>/<series>/frame_%04d.png`.
+`angiocad_to_cls`'s assumed `<root>/<patient>/<series>/` resolves **2,606 of 2,644 videos (98.6%)**.
+
+| | |
+|---|---|
+| patient dirs on disk | **412, not 413** — one patient is absent from the archive entirely |
+| unresolved videos | 38 across 16 patients (worst: 157 x6, 63 x5, 413 x5, 393 x4) |
+| orphan folders | 105 on disk the sheet never names (e.g. patient 136 series 11) — unlabelled videos, unusable |
+| frames per video | min 11, **median 53**, max 512 |
+| positives | 1,686 @50% (63.8%) / 1,524 @70% (57.6%) — 162 videos flip; **Dr. Reddy's call** |

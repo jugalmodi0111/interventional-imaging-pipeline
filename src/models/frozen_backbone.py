@@ -22,9 +22,16 @@ def make_backbone(name, imgsz=224):
         backbone = nn.Sequential(conv, nn.ReLU(), nn.AdaptiveAvgPool2d(1), nn.Flatten())
         return backbone, 32
     import timm                                    # lazy: only real runs pay for this
-    model = timm.create_model(name, pretrained=True, num_classes=0, in_chans=1)
-    feat_dim = model.num_features
-    return model, feat_dim
+    kw = dict(pretrained=True, num_classes=0, in_chans=1)
+    # img_size is NOT optional for the ViTs this project cares about: timm's DINOv2 is built at
+    # 518 px and ASSERTS on a 224 input, so the imgsz this function already took has to reach timm
+    # or configs/avf_fistulography.yaml's `imgsz: 224` can never load. CNNs (ResNet, ConvNeXt) take
+    # no img_size at all and raise TypeError -- they are resolution-agnostic, so drop it and retry.
+    try:
+        model = timm.create_model(name, img_size=imgsz, **kw)
+    except TypeError:
+        model = timm.create_model(name, **kw)
+    return model, model.num_features
 
 
 class FrozenBackboneClassifier(nn.Module):

@@ -41,3 +41,70 @@ def test_head_learns_while_backbone_stays_fixed():
         loss.backward()
         opt.step()
     assert all(torch.equal(a, b) for a, b in zip(before, m.backbone.parameters()))
+
+
+# --- real-backbone plumbing: name resolution + resolution handling ------------------------------
+# These pin the two defects found 2026-08-25 when the bake-off first tried a REAL backbone. Both
+# lived in shipped code and neither was reachable from the test-tiny path, so the whole suite was
+# green while `configs/avf_fistulography.yaml` named a model timm cannot build.
+
+class _FakeTimm:
+    """Stands in for timm so these tests need no network and no weights."""
+
+    def __init__(self, accepts_img_size=True):
+        self.accepts_img_size = accepts_img_size
+        self.calls = []
+
+    def create_model(self, name, **kw):
+        self.calls.append(kw)
+        if "img_size" in kw and not self.accepts_img_size:
+            raise TypeError("ResNet.__init__() got an unexpected keyword argument 'img_size'")
+
+        class M:
+            num_features = 111
+        return M()
+
+
+def _with_fake_timm(monkeypatch, fake):
+    import sys
+    monkeypatch.setitem(sys.modules, "timm", fake)
+
+
+def test_timm_backbone_is_built_at_the_requested_resolution(monkeypatch):
+    """DINOv2 in timm defaults to 518 px and ASSERTS on a 224 input. make_backbone took an imgsz and
+    silently dropped it, so the config's declared imgsz 224 could never have worked."""
+    from src.models import frozen_backbone as fb
+    fake = _FakeTimm(accepts_img_size=True)
+    _with_fake_timm(monkeypatch, fake)
+    _, dim = fb.make_backbone("vit_base_patch14_dinov2.lvd142m", imgsz=224)
+    assert dim == 111
+    assert fake.calls[-1]["img_size"] == 224
+    assert fake.calls[-1]["in_chans"] == 1 and fake.calls[-1]["num_classes"] == 0
+
+
+def test_cnn_backbones_that_reject_img_size_still_build(monkeypatch):
+    """ResNet/ConvNeXt take no img_size (they are resolution-agnostic) and raise TypeError on it.
+    That must degrade to a plain build, not kill the bake-off."""
+    from src.models import frozen_backbone as fb
+    fake = _FakeTimm(accepts_img_size=False)
+    _with_fake_timm(monkeypatch, fake)
+    _, dim = fb.make_backbone("resnet50.a1_in1k", imgsz=224)
+    assert dim == 111
+    assert "img_size" in fake.calls[0] and "img_size" not in fake.calls[-1]
+
+
+def test_configured_backbone_name_exists_in_timm():
+    """configs/avf_fistulography.yaml shipped `dinov2_vitb14` -- a torch.hub name, which timm does
+    not know (`RuntimeError: Unknown model`). Registry lookup only; downloads nothing."""
+    timm = pytest.importorskip("timm")
+    yaml = pytest.importorskip("yaml")
+    with open("configs/avf_fistulography.yaml") as f:
+        name = yaml.safe_load(f)["model"]["backbone"]
+    base = name.split(".")[0]          # list_models() reports architectures without pretrained tags
+    assert timm.is_model(base), (
+        f"configs/avf_fistulography.yaml names backbone {name!r}, which timm cannot build "
+        f"(architecture {base!r} is not in the registry).")
+    if "." in name:                    # a pretrained tag was given -- it must be a real one
+        assert name in set(timm.list_models(pretrained=True)), (
+            f"{name!r} names architecture {base!r} with an unknown pretrained tag. "
+            f"Valid: {timm.list_models(f'{base}*', pretrained=True)[:4]}")

@@ -1,8 +1,8 @@
 # Project Tracker - Interventional Imaging Pipeline
 
 **Purpose:** single source of truth for *what is done* and *what is next*. Check boxes as you go.
-**Last updated:** 2026-08-24 · **Owner:** jugalmodi0111 · **HEAD at update:** `164cc27` (branch `model-one-scaffold`, + uncommitted Model One scaffold)
-**Verified suite at update:** **836 passing** across 52 test files (`python -m pytest tests/ -q`)
+**Last updated:** 2026-08-25 · **Owner:** jugalmodi0111 · **HEAD at update:** `cd0ccc2` (main, clean)
+**Verified suite at update:** **839 passing** across 52 test files (`python -m pytest tests/ -q`)
 **Companion docs:** [`Model_Pipeline_Playbook.md`](Model_Pipeline_Playbook.md) (rationale) · [`DATASETS.md`](DATASETS.md) · [`INGEST_HDD_RUNBOOK.md`](INGEST_HDD_RUNBOOK.md) · [`Dialygo_Orientation_and_Requirements.md`](Dialygo_Orientation_and_Requirements.md) (B1–B9, binding) · [`INTENDED_USE.md`](INTENDED_USE.md)
 
 ---
@@ -279,8 +279,19 @@ since landed** (2026-08-23) and is the AngioCAD half of this, so Task 8 is now o
 `timm` **is now installed** (1.0.28 — it was already declared in `requirements.txt`; only the env
 lagged). No real or proxy frames are on disk, so the bake-off still cannot run.
 
-- [ ] Backbone bake-off — needs GPU + a real corpus. AngioCAD (16.4 GB RAR, 3.4 TB extracted) is the
-  proxy and is **not downloaded**; a selective-extraction strategy has to be planned first.
+- [x] **AngioCAD acquired, probed and turned into a corpus — 2026-08-25**, Kaggle kernel
+  `jugalmodi0111/angiocad`, 43 min end-to-end. The `3.4 TB` blocker was **false** (see below).
+  Corpus: **2,606 videos / 412 patients / 10,421 frames @224 = 0.29 GB**, 1,658 pos / 948 neg.
+- [ ] Backbone bake-off — the corpus now exists, so this is unblocked *except* for batching.
+  `train_classifier.train` does a FULL-BATCH forward: `model(xt)` on every frame at once. The input
+  tensor is not the problem (10,421 x 1 x 224 x 224 float32 = **2.09 GB**, fine); the problem is the
+  activations inside a real backbone — DINOv2 ViT-B at 224 px is 257 tokens x 768 dim x 12 layers,
+  order **~100 GB** for that batch. Fix: feature-cache the frozen backbone (batched forward once,
+  cache `[N, feat_dim]`, train the head on those), which is also strictly cheaper since the backbone
+  never changes. Local TDD work, not a notebook change.
+- [ ] Smoke test still unrun: the kernel cloned `main @ 164cc27`, i.e. **before** the Model One merge,
+  so `HAS_SCAFFOLD` was false and Cell 6's real-backbone step skipped itself. Rerun against the
+  saved corpus — do not re-download 16 GB.
 - [ ] `cadica_to_cls.py` (Task 8 remainder)
 - [ ] The learned-modality half of B3 — until it exists the `avf_fistulography` registry entry is
   unreachable, because the validity gate always returns its configured `validity.modality`.
@@ -366,7 +377,7 @@ For validating code, the backbone bake-off, and GPU workflow on real X-ray angio
 4. **Approve the Model One plan** (± Task 8 adapters) and pick an execution style.
 
 **Buildable now, no blockers:**
-5. ~~Model One scaffold, tasks 1–7~~ — **DONE 2026-08-24** (836 tests). Next on this track: the backbone bake-off, which needs GPU + real or proxy frames (AngioCAD is the proxy corpus and is not downloaded yet)
+5. ~~Model One scaffold, tasks 1–7~~ — **DONE 2026-08-24** (839 tests). ~~AngioCAD not downloaded~~ — **acquired 2026-08-25**, corpus built (2,606 videos / 412 patients). Next: feature-cache the frozen backbone so the bake-off can run without OOM, then the bake-off
 6. Proxy training path: AngioCAD adapter → train → CARDIAG external test (needs Kaggle/Colab GPU)
 7. `pip install timm`; decide router-vs-validity-gate
 8. AVF audio proof-of-concept on the open figshare set (replaces the `train_audio.py` stub)
@@ -405,6 +416,23 @@ Catalogued 2026-08-09, several still open as of this update:
 ---
 
 ## 10. Changelog — entries since the 2026-08-13 rebuild
+
+- **2026-08-25 (b)** — **The bake-off notebook landed, and building it exposed two defects that made a real backbone impossible to load.** Neither was reachable from any existing test, because every test used the offline `test-tiny` backbone — so the suite was fully green while `configs/avf_fistulography.yaml` named a model the code cannot build.
+
+  1. **`model.backbone: dinov2_vitb14` is not a timm model.** It is the **torch.hub** name; `timm.create_model` answers `RuntimeError: Unknown model (dinov2_vitb14)`. The declared default backbone of Model One would have failed on first contact with real data. Corrected to `vit_base_patch14_dinov2.lvd142m` (registry-verified), and the DINOv3 candidate comment corrected from the non-existent `dinov3_vitb16` to `vit_base_patch16_dinov3`.
+  2. **`make_backbone(name, imgsz)` accepted `imgsz` and silently dropped it.** timm's DINOv2 is built at **518 px** and *asserts* on a 224 input, so the config's declared `imgsz: 224` could never have loaded even with the right name. `img_size` is now passed through, with a `TypeError` fallback for CNNs (ResNet/ConvNeXt take no `img_size` and are resolution-agnostic).
+
+  Three tests added (suite **839 → 842**), all runnable offline: a fake-timm double asserting `img_size` reaches the factory, the same asserting the CNN fallback, and a registry-lookup test pinning that the *config's* backbone name is one timm can actually build — the test that would have caught this. NEW `notebooks/kaggle_angiocad_bakeoff.{py,ipynb}`: mounts the acquire run's corpus as a Kaggle input (**downloads nothing**), re-asserts one-group-per-patient before training, feature-caches each frozen backbone once in batches, then trains a linear head per backbone on patient-grouped splits and ranks them with bootstrap CIs. Four backbones: DINOv2 (B4's default), DINOv3 (B4's target), DINOv1 at native 224 (isolates DINOv2's gain from its resolution change), and a supervised ResNet-50 control — if the CNN wins, "foundation backbone" is an unearned premise. `STAGE_ACCURACY_RESEARCH.md` already records "REFUTED: DINOv2 wins", so the notebook prints whether the top-two CIs overlap and says outright that an overlap does not pick a winner.
+
+- **2026-08-25** — **AngioCAD acquired and measured. The `3.4 TB` blocker was fiction, and the adapter's guessed layout was right.** Kaggle kernel `jugalmodi0111/angiocad` (`notebooks/kaggle_angiocad_acquire.ipynb`), 43 min: 37 min download at **5–16 MB/s**, 3.2 min extraction, ~1 min corpus build.
+
+  **`3.4 TB extracted` is REFUTED — 121,566 PNG entries totalling 16.37 GB, expansion ratio 1.00x.** A **208x** overstatement, read straight out of the RAR headers without extracting anything. The figure was never sourced: it appears nowhere in the Zenodo record, and PNG is already DEFLATE-compressed so a 200x expansion was never physically possible. `/kaggle/temp` had **1,102 GB free** — disk was never within two orders of magnitude of being a constraint, and "a selective-extraction strategy has to be planned first" blocked this track for two days on a number nobody had checked. `docs/DATASETS.md` corrected (old claim struck, not deleted).
+
+  **`angiocad_to_cls`'s assumed layout was CORRECT** — `<root>/<patient>/<series>/` resolves **2,606 of 2,644 videos (98.6%)** against the real tree (`AngioCAD_Dataset/<patient>/<series>/frame_%04d.png`). That assumption had never been tested: the adapter was written and unit-tested against the 43 kB sheet alone. Also measured: **412 patient dirs, not 413** — one patient is absent from the archive entirely; **38 unresolved videos** across 16 patients (157 x6, 63 x5, 413 x5) where a series spec parses cleanly but names no folder; **105 orphan folders** the sheet never names (series numbers run past its range, e.g. patient 136 series 11) — real videos with no label, unusable; frames per video min 11 / **median 53** / max 512. Positive rates reproduce the sheet-only prediction exactly: **1,686 @50% (63.8%) / 1,524 @70% (57.6%)**, 162 videos flipping — still **Dr. Reddy's call**, still open.
+
+  **`group_key` gained `_ANGIOCAD_RE`** (2026-08-24, 3 tests): corpus stems are `angiocad_<patient>_s<NN>`, which without a rule fall through to `return name` and group per SERIES. 277 of 413 patients have videos on both coronary sides, so that scatters a patient across train and val — P0.2 / CADICA / AVF a fourth time, and silent, because a per-series split has every group unique by construction and passes any group-overlap audit. Cell 6 now asserts one-group-per-patient and crashes rather than emitting a leaky corpus.
+
+  **Not done:** the real-backbone smoke test. The kernel cloned `main @ 164cc27`, before the Model One merge, so it skipped itself as designed. And the bake-off proper needs batching first: `train` forwards the whole split in one call, which is fine for `test-tiny` and ~100 GB of activations for a real ViT-B. Feature-caching the frozen backbone is the fix.
 
 - **2026-08-24** — **Model One scaffold built: the classifier path exists end-to-end, on synthetic data only.** All 7 tasks of [`2026-08-13-model-one-classifier-scaffold.md`](superpowers/plans/2026-08-13-model-one-classifier-scaffold.md) executed TDD; suite **800 → 836**. NEW `src/eval/cls_metrics.py` (62), `src/models/frozen_backbone.py` (53), `src/train/train_classifier.py` (185), `src/serve/infer_cls.py` (40), plus `cls_to_finding`/`_load_cls`/the orchestrator `cls` branch, the `avf_fistulography` registry entry, and `make train-avf-cls`. Proven composed: `train` → `head.pt` → `ClsModel` → `analyze_frame` returns a typed `avf_ja_stenosis` finding, and `model.inferred` was **verified** (not assumed) to carry `task: "cls"`. `timm` 1.0.28 installed — it was already in `requirements.txt`; only the env lagged.
 
