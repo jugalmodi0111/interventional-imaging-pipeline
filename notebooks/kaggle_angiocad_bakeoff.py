@@ -40,24 +40,123 @@ print("=" * 90)
 print("PREFLIGHT")
 print("=" * 90)
 
-# Auto-discover the corpus: the mount point depends on how the data source was added, and hardcoding
-# one path is the single most likely way for this notebook to fail on someone else's setup.
-cands = sorted(Path("/kaggle/input").rglob("corpus/labels.jsonl"))
-if not cands:
-    raise SystemExit(
-        "corpus not found under /kaggle/input.\n"
-        "Fix: sidebar -> Add Input -> Notebook Output -> jugalmodi0111/angiocad, then rerun.\n"
-        f"Present inputs: {[p.name for p in Path('/kaggle/input').glob('*')] or '(none)'}")
-CORPUS = cands[0].parent
+# --- INPUT CHECKER ------------------------------------------------------------------------------
+# What the acquire run (kernel `jugalmodi0111/angiocad`) produced. Deviation is not automatically
+# wrong -- a different --threshold or FRAMES_PER_VIDEO legitimately changes these -- but it must be
+# surfaced, because silently baking off against a corpus that is not the one you think you attached
+# produces numbers that look fine and mean nothing.
+EXPECTED = {"videos": 2606, "patients": 412, "frames": 10421}
+
+# NB `raise SystemExit` is WRONG in a notebook: IPython treats it as a clean shutdown of the CELL and
+# every later cell still runs, so Cell 2 would proceed on an undefined CORPUS and fail somewhere
+# confusing. A real exception stops "Run All" and fails a committed run properly.
+
+
+class CorpusMissing(RuntimeError):
+    pass
+
+
+def _mounted():
+    root = Path("/kaggle/input")
+    return sorted(p.name for p in root.glob("*")) if root.is_dir() else []
+
+
+def find_corpus():
+    """Locate the attached AngioCAD corpus, or explain precisely what to attach."""
+    root = Path("/kaggle/input")
+    if not root.is_dir():
+        raise CorpusMissing(
+            "/kaggle/input does not exist -- no data source is attached to this notebook.\n"
+            "Fix: sidebar -> Add Input -> Notebook Output -> jugalmodi0111/angiocad")
+    cands = sorted({c.parent for c in root.rglob("corpus/labels.jsonl")})
+    if not cands:
+        raise CorpusMissing(
+            "No AngioCAD corpus under /kaggle/input.\n"
+            f"  currently attached : {_mounted() or '(nothing)'}\n"
+            "  expected           : a notebook-output containing corpus/labels.jsonl\n"
+            "Fix: sidebar -> Add Input -> Notebook Output -> jugalmodi0111/angiocad -> Add.\n"
+            "     (Notebook OUTPUT, not Dataset -- the corpus was produced by a kernel run.)")
+    if len(cands) > 1:
+        best = max(cands, key=lambda c: sum(1 for _ in (c / "frames").rglob("*.png")))
+        print(f"  NOTE: {len(cands)} corpora attached {[str(c) for c in cands]};")
+        print(f"        using the largest -> {best}")
+        return best
+    return cands[0]
+
+
+def verify_corpus(corpus):
+    """Structural + content checks. Returns a report; raises on anything that would poison a run."""
+    frames = corpus / "frames"
+    if not frames.is_dir():
+        raise CorpusMissing(f"{corpus} has labels.jsonl but no frames/ dir -- partial mount.")
+
+    rows, bad = [], 0
+    for line in (corpus / "labels.jsonl").read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            bad += 1
+            continue
+        if {"key", "label", "patient"} <= set(r) and r["label"] in (0, 1):
+            rows.append(r)
+        else:
+            bad += 1
+    if not rows:
+        raise CorpusMissing(f"{corpus}/labels.jsonl parsed to zero usable rows ({bad} malformed).")
+
+    dirs = {d.name for d in frames.iterdir() if d.is_dir()}
+    n_png = sum(1 for _ in frames.rglob("*.png"))
+    keyed = {r["key"] for r in rows}
+    present = keyed & dirs
+
+    # The failure mode that actually bit us: a truncated/paginated copy of the kernel output mounts
+    # with labels.jsonl intact but only a fraction of the 10k PNGs. Metrics would still compute.
+    if len(present) < 0.9 * len(keyed):
+        raise CorpusMissing(
+            f"TRUNCATED MOUNT: labels.jsonl names {len(keyed)} videos but only {len(present)} "
+            f"frame dirs are present ({n_png} PNG).\nRe-attach the full notebook output.")
+
+    sample = next(iter(frames.rglob("*.png")), None)
+    if sample is None:
+        raise CorpusMissing(f"{frames} contains no PNG at all.")
+    import cv2
+    img = cv2.imread(str(sample), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise CorpusMissing(f"sample frame {sample} did not decode -- corrupt mount.")
+
+    rep = {"videos": len(rows), "patients": len({r["patient"] for r in rows}), "frames": n_png,
+           "positive": sum(r["label"] for r in rows), "malformed_rows": bad,
+           "frame_shape": tuple(img.shape), "missing_dirs": len(keyed - dirs)}
+    print(f"  labels.jsonl   : {rep['videos']} videos, {rep['patients']} patients, "
+          f"{rep['positive']} positive ({rep['positive'] / rep['videos']:.1%})"
+          + (f", {bad} malformed rows SKIPPED" if bad else ""))
+    print(f"  frames         : {rep['frames']} PNG, sample {sample.name} {rep['frame_shape']}")
+    if rep["missing_dirs"]:
+        print(f"  NOTE: {rep['missing_dirs']} labelled videos have no frame dir (tolerated, <10%)")
+    for k, want in EXPECTED.items():
+        got = rep[k]
+        flag = "OK " if got == want else "DIFFERS"
+        print(f"  {k:14s} : {got} (acquire run produced {want}) {flag}")
+        if got != want:
+            print(f"      -> not fatal, but confirm this is the corpus you meant "
+                  f"(a different --threshold or FRAMES_PER_VIDEO changes this)")
+    return rep
+
+
+CORPUS = find_corpus()
 FRAMES = CORPUS / "frames"
 print(f"corpus         : {CORPUS}")
+CORPUS_REPORT = verify_corpus(CORPUS)
+print("input check    : PASS")
 
 try:
     import torch
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"torch          : {torch.__version__} | {torch.cuda.get_device_name(0) if dev == 'cuda' else 'CPU'}")
 except Exception as e:
-    raise SystemExit(f"torch unavailable: {e}")
+    raise RuntimeError(f"torch unavailable: {e}") from e
 if dev == "cpu":
     print("  !! no GPU — a real backbone over 10k frames on CPU is hours. Enable the T4 accelerator.")
 
