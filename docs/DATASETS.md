@@ -1,4 +1,4 @@
-# Datasets to download — what, why, where
+# Datasets to download why, where
 
 Scope-ordered. **Download the v1 core first** (coronary → stenosis → catheter); everything else is
 later-stage or data-gated. Metadata here is the *corrected* version from
