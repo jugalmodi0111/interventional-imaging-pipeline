@@ -3,7 +3,7 @@ datasets:
   arcade_stenosis: {root: data/raw/arcade/stenosis, task: 2, format: coco}   # stenosis split only
   danilov:         {root: data/raw/danilov, format: coco, max_frames_per_patient: 5}   # cap 5/patient: 64 patients/8325 frames dilute the honest metric (arcade-only 0.246 > +danilov 0.214)
   cadica:          {root: data/raw/cadica, format: native, max_frames_per_patient: 40, negatives_per_positive: 0.25}   # 2024 patient-diverse lesion angiography; run cadica_to_yolo prep to include (patients > frames). cap 40/patient: 3996 keyframes over ~42 patients are near-duplicates -> cap cuts redundancy + val-fraction variance
-  # negatives_per_positive 1.0 (0 = off, the pre-2026-08-16 behaviour): sample that many BACKGROUND
+  # negatives_per_positive (SHIPPED 0.25; 0 = off, the pre-2026-08-16 behaviour): sample that many BACKGROUND
   # frames per CADICA positive written, drawn from CADICA's NON-LESION videos ONLY (per-patient
   # lesionVideos.txt/nonlesionVideos.txt; an unannotated frame inside a LESION video is NOT a
   # negative -- the lesion is there, CADICA just annotates keyframes -- and feeding those in would

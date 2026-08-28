@@ -24,7 +24,7 @@ cap): CADICA ships ~100 near-duplicate keyframes/patient, which dilutes the spli
 frames; capping keeps an evenly-spaced subset per patient (see `_cap_records` / `io_utils.
 cap_frames_per_patient`).
 
-NEGATIVE (background) frames — config `datasets.cadica.negatives_per_positive`, default 1.0, `0`
+NEGATIVE (background) frames — config `datasets.cadica.negatives_per_positive`, default 0.25, `0`
 disables. Added 2026-08-16 after the architecture audit (docs/STENOSIS_ARCHITECTURE_AUDIT.md A1)
 found the stenosis corpus contained ZERO label-less images: this converter's annotation-driven walk
 dropped every non-lesion video whole (they ship no `groundtruth` dir), and ARCADE/Danilov annotate
@@ -371,7 +371,7 @@ def _write_frame(out_dir, size, patient, stem, gray, lines, cv2, io):
         f.write("\n".join(lines))
 
 
-def _convert(root, out_dir, size, max_per_patient=None, negatives_per_positive=1.0):
+def _convert(root, out_dir, size, max_per_patient=None, negatives_per_positive=0.25):
     """CLAHE+resize each CADICA frame, write YOLO images/labels/{train,val} split by PATIENT.
 
     If ``max_per_patient`` is set, the record list is capped per patient (``_cap_records``, evenly
@@ -443,7 +443,10 @@ def main(cfg):
     root = d["root"]
     size = cfg.get("model", {}).get("imgsz", 640)
     max_per_patient = d.get("max_frames_per_patient")
-    npp = d.get("negatives_per_positive", 1.0)          # 0 disables (pre-2026-08-16 behaviour)
+    # Fallback MUST match the shipped config (configs/stenosis_yolo.yaml), or dropping the key
+    # silently rebuilds a different corpus. It was 1.0 -- the swept value that cannot reach 0.90
+    # per-video sensitivity at any measured threshold. 0 disables (pre-2026-08-16 behaviour).
+    npp = d.get("negatives_per_positive", 0.25)
     res = _convert(root, OUT, size, max_per_patient=max_per_patient, negatives_per_positive=npp)
     stems, negs = res["positives"], res["negatives"]
     n, n_neg = len(stems), len(negs)

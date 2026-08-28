@@ -287,8 +287,12 @@ def test_negatives_per_positive_controls_the_count(tmp_path, monkeypatch, npp, e
 
 
 def test_negatives_are_spread_across_patients_not_drawn_from_one(tmp_path, monkeypatch):
+    # Ratio pinned explicitly: this test is about the round-robin ALLOCATION, so it must not
+    # silently depend on whatever the shipped default happens to be (at 0.25 the budget is too
+    # small to cover every patient and the test would be asserting the default, not the spread).
     src = _tree(str(tmp_path / "raw"), manifests=True)
-    out = _run(tmp_path, monkeypatch=monkeypatch, root=src)
+    out = _run(tmp_path, monkeypatch=monkeypatch,
+               cfg=_cfg(src, negatives_per_positive=1.0))
 
     per_patient = {}
     for s in _backgrounds(out):
@@ -298,8 +302,11 @@ def test_negatives_are_spread_across_patients_not_drawn_from_one(tmp_path, monke
 
 
 def test_negatives_are_evenly_spaced_within_each_video(tmp_path, monkeypatch):
+    # Ratio pinned explicitly for the same reason as the spread test above: the assertion is about
+    # even SPACING across the clip, which needs a budget big enough to draw three frames from p1.
     src = _tree(str(tmp_path / "raw"), manifests=True)
-    out = _run(tmp_path, monkeypatch=monkeypatch, root=src)
+    out = _run(tmp_path, monkeypatch=monkeypatch,
+               cfg=_cfg(src, negatives_per_positive=1.0))
 
     picked = sorted(int(s.split("_")[-1]) for s in _backgrounds(out) if s.startswith("p1_"))
     assert picked == [0, 4, 8], picked          # spans the clip, not the first three frames

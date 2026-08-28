@@ -163,3 +163,52 @@ def test_build_records_threshold_changes_the_labels(tmp_path):
     p = _sheet(tmp_path, [_row(rca_series="1", lca_series="2", **{"Prox LAD": "51-75"})])
     assert build_records(p, threshold=50)[1]["positive"] is True
     assert build_records(p, threshold=70)[1]["positive"] is False
+
+
+# --------------------------------------------------------------------------------------------
+# Comma-separated and reversed series specs. Found 2026-08-26 by running the adapter against the
+# real AngioCAD_Labels.xlsx: 20 distinct comma-containing formats across 23 patients (e.g. patient
+# 252 RCA "3,4,11,12,13") parsed to [] and vanished, taking 82 videos with them -- the corpus is
+# 2,726 videos, not the 2,644 every doc reports. The bug is invisible because a malformed spec
+# returned the SAME [] as a genuinely blank cell, which the docstring documents as "missing data,
+# not a corrupt sheet". Present, valid, multi-run specs were being conflated with absent ones.
+# --------------------------------------------------------------------------------------------
+
+
+def test_comma_separated_series_are_all_parsed():
+    assert parse_series_spec("3,4,11,12,13") == [3, 4, 11, 12, 13]
+
+
+def test_comma_separated_ranges_expand_and_concatenate():
+    assert parse_series_spec("1-3,6-8") == [1, 2, 3, 6, 7, 8]
+
+
+def test_mixed_singles_and_ranges_parse():
+    assert parse_series_spec("2, 5-7, 9") == [2, 5, 6, 7, 9]
+
+
+def test_duplicates_across_parts_are_collapsed_and_order_is_stable():
+    assert parse_series_spec("3-5,4,5") == [3, 4, 5]
+
+
+def test_a_reversed_range_is_read_as_the_span_it_names():
+    """Real data: patient 332 RCA "7-6", patient 353 LCA "8-3". range(7, 6+1) is empty, so both
+    silently vanished. A reversed pair still unambiguously names its endpoints."""
+    assert parse_series_spec("7-6") == [6, 7]
+    assert parse_series_spec("8-3") == [3, 4, 5, 6, 7, 8]
+
+
+def test_a_genuinely_unparseable_spec_RAISES_instead_of_masquerading_as_blank():
+    """The core defect: silence. Blank means "no series recorded"; garbage means "this sheet is
+    not what we think it is". Collapsing the second into the first is how 82 videos disappeared
+    without a single warning."""
+    with pytest.raises(ValueError):
+        parse_series_spec("3;4")
+    with pytest.raises(ValueError):
+        parse_series_spec("seven")
+
+
+def test_blank_and_none_still_mean_missing_data_not_corruption():
+    assert parse_series_spec(None) == []
+    assert parse_series_spec("") == []
+    assert parse_series_spec("   ") == []

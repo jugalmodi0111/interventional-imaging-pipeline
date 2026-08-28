@@ -45,30 +45,64 @@ SEVERITY_BANDS = {
 }
 
 
-def parse_series_spec(spec):
-    """``"1-2"`` / ``"7"`` / ``"3-9"`` -> the list of series numbers it names.
+#: Written-out "no value here" cells. These mean MISSING, not malformed, so they yield ``[]``
+#: like a blank. Everything outside this set that fails to parse raises -- see parse_series_spec.
+_BLANK_SENTINELS = {"n/a", "na", "none", "nil", "-", "--"}
 
-    openpyxl returns a bare number as an int, so ints are accepted too. Blank/None/unparseable
-    yields ``[]`` rather than raising: a patient may simply have no series recorded for a side, and
-    that is missing data, not a corrupt sheet.
+
+def parse_series_spec(spec):
+    """``"1-2"`` / ``"7"`` / ``"3-9"`` / ``"3,4,11"`` / ``"1-3,6-8"`` -> the series numbers named.
+
+    openpyxl returns a bare number as an int, so ints are accepted too.
+
+    BLANK is missing data: ``None``/``""`` yield ``[]``, because a patient may simply have no
+    series recorded for a side and that is not a corrupt sheet.
+
+    GARBAGE is not missing data: an unparseable token raises ``ValueError``. Those two cases used
+    to share the ``[]`` return, and that silence cost real videos -- comma-separated specs (20
+    distinct formats, 23 patients on the real sheet) hit the ``int()`` failure and vanished
+    indistinguishably from empty cells, undercounting the corpus by 82 videos. A sheet whose
+    grammar we do not understand must say so.
+
+    A REVERSED range (``"7-6"``, ``"8-3"`` -- both real) names its endpoints unambiguously, so it
+    is read as the span it describes rather than dropped as an empty ``range()``.
     """
     if spec is None:
         return []
     if isinstance(spec, (int, float)):
         return [int(spec)]
     s = str(spec).strip()
-    if not s:
+    if not s or s.casefold() in _BLANK_SENTINELS:
         return []
-    if "-" in s:
-        lo, _, hi = s.partition("-")
-        try:
-            return list(range(int(lo.strip()), int(hi.strip()) + 1))
-        except ValueError:
-            return []
-    try:
-        return [int(s)]
-    except ValueError:
-        return []
+
+    out = []
+    for part in s.split(","):
+        p = part.strip()
+        if not p:
+            continue                     # trailing/duplicated commas: separator noise, not data
+        if "-" in p:
+            lo, _, hi = p.partition("-")
+            try:
+                a, b = int(lo.strip()), int(hi.strip())
+            except ValueError:
+                raise ValueError(
+                    f"unparseable series range {p!r} in spec {s!r} -- refusing to guess. "
+                    f"Expected forms: '7', '1-2', '3,4,11', '1-3,6-8'.") from None
+            out.extend(range(min(a, b), max(a, b) + 1))
+        else:
+            try:
+                out.append(int(p))
+            except ValueError:
+                raise ValueError(
+                    f"unparseable series number {p!r} in spec {s!r} -- refusing to guess. "
+                    f"Expected forms: '7', '1-2', '3,4,11', '1-3,6-8'.") from None
+
+    seen, uniq = set(), []               # a series named twice is one video, not two
+    for n in out:
+        if n not in seen:
+            seen.add(n)
+            uniq.append(n)
+    return uniq
 
 
 def severity_band(grade):
