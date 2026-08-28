@@ -1,4 +1,120 @@
-# Project Tracker - Interventional Imaging Pipeline
+Continuing without touching your environment. Checking whether your other interpreter is intact — read-only.
+
+Bash Check pyenv interpreter health
+IN
+P=/Users/jugalmodi/.pyenv/versions/3.12.9/bin/python
+$P -c "import numpy,cv2;print('pyenv OK numpy',numpy.__version__,'cv2',cv2.__version__)" 2>&1|tail -2
+echo "--- torch? ---"; $P -c "import torch;print('torch',torch.__version__)" 2>&1|tail -1
+echo "--- pytest? ---"; $P -m pytest --version 2>&1|tail -1
+
+OUT
+pyenv OK numpy 2.4.3 cv2 5.0.0
+--- torch? ---
+torch 2.13.0
+--- pytest? ---
+pytest 9.0.2
+pyenv env is intact — numpy 2.4.3, cv2 5.0.0, torch 2.13.0. Running the suite there.
+
+Bash Run suite under pyenv interpreter
+IN
+timeout 900 /Users/jugalmodi/.pyenv/versions/3.12.9/bin/python -m pytest tests/ -q 2>&1 | tail -5
+
+OUT
+  /Users/jugalmodi/Projects/Workspace/INU/Med/interventional-imaging-pipeline/tests/test_registry.py:71: UserWarning: registry: modality 'coronary_angiography' has non-boolean floor_ok=[True] (expected YAML true/false); failing safe to floor_ok=False (defer to human).
+    reg = load_registry(str(y))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+842 passed, 52 warnings in 14.12s
+842 passed under pyenv. Project is fine — only the anaconda env is damaged. Now the mutation testing.
+
+Bash Run 6 mutations against full suite
+IN
+cat > /private/tmp/claude-501/-Users-jugalmodi-Projects-Workspace-INU-Med-interventional-imaging-pipeline/768bac1b-a35e-49a2-b710-2bcf91c3c04e/scratchpad/mutate.py <<'PYEOF'
+import subprocess, sys, pathlib
+REPO = pathlib.Path("/Users/jugalmodi/Projects/Workspace/INU/Med/interventional-imaging-pipeline")
+PY = "/Users/jugalmodi/.pyenv/versions/3.12.9/bin/python"
+IO = REPO / "src/data_prep/io_utils.py"
+RG = REPO / "src/serve/registry.py"
+
+MUTS = [
+ ("1 group_key -> identity", IO,
+  "    m = _AVF_RE.match(name)", "    return name\n    m = _AVF_RE.match(name)"),
+ ("2 audit_split_leakage -> no-op", IO,
+  '    train, val = _split_stems(out_dir, "train"), _split_stems(out_dir, "val")',
+  '    return None\n    train, val = _split_stems(out_dir, "train"), _split_stems(out_dir, "val")'),
+ ("3 split_of -> always train", IO,
+  '    return "val" if h < val_frac * 1000 else "train"', '    return "train"'),
+ ("6 ungrouped threshold deleted", IO,
+  "frac <= max_ungrouped_frac", "True"),
+ ("4 floor_ok fails OPEN", RG,
+  "floor_ok = raw is True", "floor_ok = raw is not False"),
+ ("5 resolve -> first entry", RG,
+  "    return registry.get(modality)", "    return next(iter(registry.values()), None)"),
+]
+
+for name, path, old, new in MUTS:
+    src = path.read_text()
+    if old not in src:
+        print(f"{name:34s} SKIPPED (anchor not found)"); continue
+    n = src.count(old)
+    path.write_text(src.replace(old, new))
+    r = subprocess.run([PY, "-m", "pytest", "tests/", "-q", "--no-header", "-x", "-p", "no:cacheprovider"],
+                       cwd=REPO, capture_output=True, text=True, timeout=900)
+    subprocess.run(["git", "checkout", "--", str(path.relative_to(REPO))], cwd=REPO, check=True)
+    tail = [l for l in r.stdout.strip().splitlines() if l.strip()][-1] if r.stdout.strip() else "NO OUTPUT"
+    killed = "failed" in tail or "error" in tail.lower()
+    first_fail = ""
+    if killed:
+        fails = [l for l in r.stdout.splitlines() if l.startswith("FAILED") or l.startswith("ERROR")]
+        first_fail = fails[0][:110] if fails else ""
+    print(f"{name:34s} ({n}x) {'KILLED  ' if killed else 'SURVIVED'} | {tail[:70]} | {first_fail}")
+PYEOF
+/Users/jugalmodi/.pyenv/versions/3.12.9/bin/python /private/tmp/claude-501/-Users-jugalmodi-Projects-Workspace-INU-Med-interventional-imaging-pipeline/768bac1b-a35e-49a2-b710-2bcf91c3c04e/scratchpad/mutate.py
+echo "=== TREE CLEAN ==="; git status --short; echo "(empty above = restored)"
+
+OUT
+1 group_key -> identity            (1x) KILLED   | 1 failed, 83 passed in 4.17s | FAILED tests/test_cadica_convert_audit.py::test_main_audits_its_own_output_and_reports_cadica_grouping
+2 audit_split_leakage -> no-op     (1x) KILLED   | 1 failed, 83 passed in 3.52s | FAILED tests/test_cadica_convert_audit.py::test_main_audits_its_own_output_and_reports_cadica_grouping
+3 split_of -> always train         (1x) KILLED   | 1 failed, 83 passed in 3.71s | FAILED tests/test_cadica_convert_audit.py::test_main_audits_its_own_output_and_reports_cadica_grouping
+6 ungrouped threshold deleted      (4x) KILLED   | 1 failed, 84 passed in 3.57s | FAILED tests/test_cadica_convert_audit.py::test_main_raises_when_written_stems_defeat_group_key
+4 floor_ok fails OPEN              (1x) KILLED   | 1 failed, 619 passed, 45 warnings in 8.20s | FAILED tests/test_registry.py::test_malformed_floor_ok_fails_safe_to_false[    floor_ok: flase\n]
+5 resolve -> first entry           (1x) KILLED   | 1 failed, 584 passed, 45 warnings in 7.75s | FAILED tests/test_orchestrator.py::test_supported_modality_with_no_registry_entry_defers_unsupported
+=== TREE CLEAN ===
+(empty above = restored)
+Mutation testing done — I ran it myself. All 6 killed. No vacuous guards.
+
+#	Mutation	Result	Killed by
+1	group_key → identity (all regex branches deleted)	KILLED	test_cadica_convert_audit.py::test_main_audits_its_own_output_and_reports_cadica_grouping
+2	audit_split_leakage → immediate no-op	KILLED	same
+3	split_of → always "train"	KILLED	same
+6	ungrouped-fraction threshold deleted (4 sites)	KILLED	test_main_raises_when_written_stems_defeat_group_key
+4	floor_ok fails open instead of safe	KILLED	test_registry.py::test_malformed_floor_ok_fails_safe_to_false
+5	resolve() → first entry regardless of modality	KILLED	test_orchestrator.py::test_supported_modality_with_no_registry_entry_defers_unsupported
+Tree restored clean after each — git status empty.
+
+The six properties that would be catastrophic if they silently broke — patient grouping, the leakage auditor, split determinism, the ungrouped canary, the floor_ok fail-safe, and modality resolution — are all genuinely guarded. Notably, mutation 6 was killed by a test literally named "raises when written stems defeat group_key": someone wrote a test specifically for the no-op case that fooled this repo four times. That's the guard agent 10 proved trips, pinned by a test that fails if it stops tripping.
+
+This is the answer agent 8 failed twice to produce.
+
+Final consolidated — 10 agents, 2 waves, plus my own verification
+Environment note: your anaconda env is still broken (numpy 2.2.6 + corrupted torch, from an agent's pip install). Your pyenv 3.12.9 env is healthy — numpy 2.4.3, cv2 5.0.0, torch 2.13.0 — and the suite runs 842 passed in 14.12s there. So the project is fine and you have a working interpreter; only the anaconda env needs repair, and I still haven't touched it.
+
+Fix before anything else
+The coronary headline is a one-image score. ds[0], unfiltered dataset, notebook bypasses train_seg.py's real harness. Dice 0.915 — the number in your clinical handover — has no held-out measurement behind it. Both "PASSED" gates also cannot fail: coreml_validate.py discards its own boolean, and no ONNX-INT8 validator exists. Cheap fix: the correct harness already exists and is tested.
+Three PHI leaks, all pre-real-data, all small fixes. Plaintext crosswalk at default perms; deid_done.jsonl pairing pseudonym with the real unshifted date+time when the shifted value was in scope two lines up; the human sign-off gate claiming SeriesDescription is scrubbed when it's in KEEP_TAGS.
+extract.py --mode synthetic against a mounted drive processes real DICOM with no gate. Four lines, mirroring scan/index_dicom.
+AngioCAD drops 82 videos silently — no comma handling in parse_series_spec. Corpus is 2,726, not 2,644. Every doc number reproduces bit-for-bit off the wrong denominator. Fix before relaunching the bake-off, not after.
+negatives_per_positive code default is 1.0 — the value three docs call clinically failing.
+Corrections to my own earlier reporting
+Aug-retrain gain is +0.012, not +0.026 (conf-sweep max vs training-curve value).
+"specificity 0.105 / PPV 0.228" conflates two different models.
+The bake-off is blocked because the angiocad kernel was overwritten with bake-off code — its corpus output no longer exists, so both kernels wait on something neither can produce.
+What held up under adversarial testing
+The leakage machinery — proven to trip on its own historical failure mode, and now proven pinned by mutation testing. split_of deterministic across PYTHONHASHSEED. The A1 negative-sampling fix real, deterministic, per-patient. Serve layer 12/12, including the honest admission that the AVF entry is unreachable dead code. Clearance gate 11/11 on the checks it claims.
+
+The pattern across all ten agents: where this project built a guard after being burned, the guard is real and provable. Where it built a claim before that discipline existed — the coronary gate, the de-id blacklist, the docs — the claim is assertion. The rigor is real; it's just unevenly distributed by date.
+
+Two things still need your call: the anaconda repair, and whether I start fixing the five items above.# Project Tracker - Interventional Imaging Pipeline
 
 **Purpose:** single source of truth for *what is done* and *what is next*. Check boxes as you go.
 **Last updated:** 2026-08-25 · **Owner:** jugalmodi0111 · **HEAD at update:** `cd0ccc2` (main, clean)

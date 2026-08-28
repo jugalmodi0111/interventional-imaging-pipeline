@@ -207,3 +207,20 @@ def test_main_real_mode_ignores_a_cwd_relative_clearance_marker(tmp_path, monkey
 
     with pytest.raises(ClearanceError):
         pixel_deid_main([str(ds_path), "--mode", "real"])
+
+
+# ---------------------------------------------------------------------------
+# P0.1 item 4: same corroboration for the pixel screener. Lower severity than
+# extract (it writes nothing), but it still reads real patient pixels on the
+# strength of an unverified "--mode synthetic".
+# ---------------------------------------------------------------------------
+
+
+def test_cli_refuses_synthetic_mode_against_a_mounted_drive_source():
+    from src.ingest.clearance import ClearanceError
+    from src.ingest.pixel_deid import main
+
+    with pytest.raises(ClearanceError) as ei:
+        main(["/Volumes/CATHLAB_HANDOVER/STUDY_A/im1.dcm", "--mode", "synthetic"])
+    msg = str(ei.value)
+    assert "synthetic" in msg and "/Volumes" in msg

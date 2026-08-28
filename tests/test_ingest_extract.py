@@ -330,3 +330,23 @@ def test_main_real_mode_ignores_a_cwd_relative_clearance_marker(tmp_path, monkey
         extract_main([str(ds_path), "--out-root", str(fake_cwd / "out"), "--mode", "real",
                      "--salt", str(fake_cwd / "salt.bin")])
     assert not (fake_cwd / "out").exists()
+
+
+# ---------------------------------------------------------------------------
+# P0.1 item 4: the CLI must corroborate a "synthetic" claim against its SOURCE
+# path, exactly as scan/index_dicom already do. Without this,
+#   python -m src.ingest.extract /Volumes/<drive>/study.dcm --mode synthetic
+# reads and de-identifies real patient pixels with no marker check at all,
+# because require_clearance treats mode="synthetic" as always-permitted.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_refuses_synthetic_mode_against_a_mounted_drive_source(tmp_path):
+    from src.ingest.clearance import ClearanceError
+    from src.ingest.extract import main
+
+    with pytest.raises(ClearanceError) as ei:
+        main(["/Volumes/CATHLAB_HANDOVER/STUDY_A/im1.dcm",
+              "--out-root", str(tmp_path / "out"), "--mode", "synthetic"])
+    msg = str(ei.value)
+    assert "synthetic" in msg and "/Volumes" in msg

@@ -303,7 +303,7 @@ def main(argv=None):
     import argparse
     import json
 
-    from src.ingest.clearance import require_clearance
+    from src.ingest.clearance import refuse_synthetic_against_mounted_drive, require_clearance
     from src.ingest.deid import load_or_create_salt
     from src.ingest.manifest import sha256_file
 
@@ -326,6 +326,11 @@ def main(argv=None):
     args = ap.parse_args(argv)
     clearance_path = args.clearance if args.clearance is not None else DEFAULT_CLEARANCE_PATH
     require_clearance(args.mode, clearance_path=clearance_path)
+    # P0.1 fix #3, extended to this CLI (audit item 4): require_clearance treats mode="synthetic"
+    # as always-permitted and never reads the marker, so without this corroboration a bare
+    # "--mode synthetic" against a mounted handover drive de-identifies and writes real patient
+    # pixels with no B5/B9 check at all. Mirrors scan_tree/build_index.
+    refuse_synthetic_against_mounted_drive(args.mode, [args.source])
 
     salt = load_or_create_salt(args.salt)
     if os.path.splitext(args.source)[1].lower() in VIDEO_EXTS:
