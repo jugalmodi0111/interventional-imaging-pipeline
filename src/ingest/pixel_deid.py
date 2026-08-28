@@ -136,7 +136,8 @@ def main(argv=None):
     import numpy as np
     import pydicom
 
-    from src.ingest.clearance import VALID_MODES, require_clearance
+    from src.ingest.clearance import (VALID_MODES, refuse_synthetic_against_mounted_drive,
+                                      require_clearance)
 
     ap = argparse.ArgumentParser(
         description="Screen a DICOM's frames for burned-in overlay text.",
@@ -152,6 +153,9 @@ def main(argv=None):
     args = ap.parse_args(argv)
     clearance_path = args.clearance if args.clearance is not None else DEFAULT_CLEARANCE_PATH
     require_clearance(args.mode, clearance_path=clearance_path)
+    # See extract.main: mode="synthetic" is an unverified caller claim, so corroborate it against
+    # the path actually about to be opened (audit P0.1 item 4).
+    refuse_synthetic_against_mounted_drive(args.mode, [args.dicom])
 
     ds = pydicom.dcmread(args.dicom)
     px = ds.pixel_array

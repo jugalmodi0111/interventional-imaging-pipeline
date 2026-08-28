@@ -400,3 +400,31 @@ def test_select_negatives_cannot_exceed_what_exists():
     recs = [("p1", "v1", f"/x/p1_v1_{i:05d}.png", None) for i in range(3)]
     assert len(c2y._select_negatives(recs, 99)) == 3
     assert c2y._select_negatives(recs, 0) == []
+
+
+def test_code_default_matches_the_shipped_config_so_a_dropped_key_is_a_no_op():
+    """Dropping `negatives_per_positive` from the config must not change the corpus.
+
+    The fallback in `_load_cfg`/`_convert` is a SILENT re-imposition: if it disagrees with the
+    shipped value, deleting one config line quietly rebuilds a different corpus than the one every
+    experiment was scored on. The old fallback was 1.0 -- the exact value the sweep showed cannot
+    reach 0.90 per-video sensitivity at any measured threshold (RESULTS.md, STENOSIS_GATE_PROPOSAL
+    .md), i.e. the config's own comment calls it clinically failing. Same defect class as the
+    documented `qualifies_det` f1 fallback, but this one was flagged nowhere.
+
+    Asserted as an INTENT (default == shipped), not as a literal, so retuning the ratio stays a
+    one-line config change and does not turn into a test failure.
+    """
+    import inspect
+
+    from src.data_prep import cadica_to_yolo as c2y
+
+    cfg = yaml.safe_load(open(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "configs", "stenosis_yolo.yaml")))
+    shipped = cfg["datasets"]["cadica"]["negatives_per_positive"]
+
+    sig_default = inspect.signature(c2y._convert).parameters["negatives_per_positive"].default
+    assert sig_default == shipped, (
+        f"_convert defaults negatives_per_positive={sig_default!r} but the shipped config says "
+        f"{shipped!r} -- dropping the config key silently rebuilds a different corpus.")
