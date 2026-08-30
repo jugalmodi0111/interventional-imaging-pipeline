@@ -6,8 +6,13 @@ collapses. Run on macOS against a small paired image/mask val set (PNG: matching
     python -m src.export.coreml_validate \
         --coreml runs/coronary/student.mlpackage --weights runs/coronary/student.pt \
         --images data/processed/coronary/val/img --masks data/processed/coronary/val/msk
+
+EXIT STATUS IS THE GATE. `cli()` turns main()'s verdict into the process exit code
+(0 = PASS, 1 = FAIL) so `make validate-coreml` / CI stops on a FAIL. Before that wiring
+existed this script printed FAIL and still exited 0, i.e. the gate could not fail a build.
+`main()` keeps returning the bool verdict — src/train/train_seg.py:222 consumes it.
 """
-import argparse, glob, os
+import argparse, glob, os, sys
 import numpy as np
 
 
@@ -25,6 +30,16 @@ def _load_pairs(images, masks, size=512, limit=50):
     return xs, ys
 
 
+def _load_coreml(path):
+    import coremltools as ct
+    return ct.models.MLModel(path)
+
+
+def _load_torch(weights, base, depth):
+    from src.models.seg_student import load_student
+    return load_student(weights, base=base, depth=depth)
+
+
 def _coreml_pred(model, x):
     name = model.get_spec().description.input[0].name
     out = model.predict({name: x[None, None].astype(np.float32)})
@@ -40,14 +55,14 @@ def _torch_pred(m, x):
 
 
 def main(a):
-    import coremltools as ct
-    from src.models.seg_student import load_student
+    """Returns the bool verdict (True = PASS). Callers that need a process exit status
+    should use cli(); src/train/train_seg.py:222 prints this bool."""
     from src.eval.metrics import dice, cldice
 
     xs, ys = _load_pairs(a.images, a.masks, size=a.size, limit=a.limit)
     assert xs, f"no paired image/mask found under {a.images} / {a.masks}"
-    cm = ct.models.MLModel(a.coreml)
-    tm = load_student(a.weights, base=a.base, depth=a.depth)
+    cm = _load_coreml(a.coreml)
+    tm = _load_torch(a.weights, a.base, a.depth)
 
     dc_t = dc_c = cl_t = cl_c = 0.0
     n = 0
@@ -65,11 +80,12 @@ def main(a):
     print(f"n={n}")
     print(f"fp32    Dice {dc_t:.4f}  clDice {cl_t:.4f}")
     print(f"coreml  Dice {dc_c:.4f}  clDice {cl_c:.4f}")
-    print(f"clDice drop {drop:+.4f}  gate(<= {a.gate})  ->  {'PASS' if drop <= a.gate else 'FAIL'}")
-    return drop <= a.gate
+    ok = bool(drop <= a.gate)
+    print(f"clDice drop {drop:+.4f}  gate(<= {a.gate})  ->  {'PASS' if ok else 'FAIL'}")
+    return ok
 
 
-if __name__ == "__main__":
+def _parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--coreml", required=True)
     ap.add_argument("--weights", required=True)
@@ -80,4 +96,13 @@ if __name__ == "__main__":
     ap.add_argument("--depth", type=int, default=4)
     ap.add_argument("--limit", type=int, default=50)
     ap.add_argument("--gate", type=float, default=0.03)
-    main(ap.parse_args())
+    return ap
+
+
+def cli(argv=None):
+    """HARD gate entry point: 0 when the clDice drop is within gate, 1 when it is not."""
+    return 0 if main(_parser().parse_args(argv)) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(cli())

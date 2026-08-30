@@ -124,9 +124,9 @@ python -m src.eval.val_by_source --weights runs/stenosis/.../weights/best.pt
 
 ### P1.1 — Recall-first operating point + temporal voting *(no retrain)*
 
-**Why.** Two free wins on the *existing* `best.pt`: (a) the deployed threshold should sit at the recall-first knee, not the default 0.25; (b) stenosis is a physical lesion across a cine window — `temporal_vote.aggregate_sequence` recovers missed frames (recall↑) and drops one-frame flicker (precision↑). This is the metric that actually matters for a screening flag and it is **CoreML-neutral** (pure post-processing, already in `src/serve/`).
+**Why.** Two free wins on the *existing* `best.pt`: (a) the deployed threshold should sit at the recall-first knee, not the default 0.25; (b) stenosis is a physical lesion across a cine window — `temporal_vote.aggregate_sequence` recovers missed frames (recall↑) and drops one-frame flicker (precision↑). This is the metric that actually matters for a screening flag and it is **CoreML-neutral** (pure post-processing).
 
-**Files.** No code change to train path. Uses `src/serve/temporal_vote.py` (`aggregate_sequence`) + `src/serve/stenosis_infer.py` (already wires it). Optional new: `src/eval/val_per_video.py`.
+**Files — corrected, both paths below moved/changed since this POA was written.** No code change to train path. ~~Uses `src/serve/temporal_vote.py` (`aggregate_sequence`) + `src/serve/stenosis_infer.py` (already wires it).~~ `temporal_vote.py` was deleted from `src/serve/` on 2026-08-13 with the rest of the video path and restored 2026-08-16 as **`src/eval/temporal_vote.py`**, for **offline** cine scoring only — it is not wired into any live request. `src/serve/stenosis_infer.py` was deleted 2026-08-13 and **was never restored** — nothing wires `aggregate_sequence` into serving today; any per-video use is a notebook/offline call, per `docs/PROJECT_TRACKER.md` §4.2 and §10. Optional new: `src/eval/val_per_video.py`.
 
 **Change / Run (GPU).**
 
@@ -144,7 +144,7 @@ Pick the recall-first point (expect ~0.10 — trades precision for the costly-er
 2. **Per-video temporal sensitivity** — group val frames by video, predict in frame order, vote, compare recall before/after:
 ```python
 # sketch: per CADICA video (pXX_vYY) / Danilov clip (<site>_<patient>_<seq>)
-from src.serve.temporal_vote import aggregate_sequence
+from src.eval.temporal_vote import aggregate_sequence  # was src.serve.temporal_vote; moved 2026-08-16
 # frames_dets = [[{"box":(cx,cy,w,h),"conf":..}, ...], ...]  # per-frame YOLO preds in order
 stab = aggregate_sequence(frames_dets, iou_thr=0.3, min_hits=2, conf_agg="mean")
 # per-video HIT if any surviving track overlaps the GT lesion on >=1 frame
@@ -263,7 +263,7 @@ P1.3 split/group fix ─┘
 - P1.2 and P1.3 are local code edits (TDD) that both feed the single P1.4 retrain.
 - Do all local edits + `pytest tests/` green **before** the GPU run.
 
-**Local pre-flight (one command):** `pytest tests/` must stay green (currently 150 passing) after the `train_kwargs`, `group_key`, and `val_by_source.source_of` edits.
+**Local pre-flight (one command):** `pytest tests/` must stay green (~~currently 150 passing~~ — stale; the suite has grown substantially since this POA was written, see `docs/PROJECT_TRACKER.md` header for the current count) after the `train_kwargs`, `group_key`, and `val_by_source.source_of` edits.
 
 ---
 

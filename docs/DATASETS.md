@@ -151,12 +151,18 @@ possible. Measured from the RAR headers without extracting
 5-16 MB/s (a 0.5 MB/s reading from a laptop is a local-network artifact, not Zenodo's ceiling).
 
 **Real layout — VERIFIED against the tree, not assumed:** `AngioCAD_Dataset/<patient>/<series>/frame_%04d.png`.
-`angiocad_to_cls`'s assumed `<root>/<patient>/<series>/` resolves **2,606 of 2,644 videos (98.6%)**.
+`angiocad_to_cls`'s assumed `<root>/<patient>/<series>/` resolves ~~2,606 of 2,644 videos (98.6%)~~
+— **corrected 2026-08-28**: `parse_series_spec` was silently dropping comma-separated series specs
+(e.g. `"3,4,11,12,13"`) and reversed ranges (e.g. `"7-6"`), conflating them with blank cells. Fixed;
+re-run against the real sheet the corpus is **2,734 videos / 413 patients**. The table below is the
+pre-fix measurement and has **not** been re-run against the fixed parser (only the top-line video
+and positive-rate counts have been recomputed, from `PROJECT_TRACKER.md`'s 2026-08-28 changelog
+entry) — treat every row below as stale pending a re-run of `kaggle_angiocad_acquire.ipynb`.
 
 | | |
 |---|---|
-| patient dirs on disk | **412, not 413** — one patient is absent from the archive entirely |
-| unresolved videos | 38 across 16 patients (worst: 157 x6, 63 x5, 413 x5, 393 x4) |
-| orphan folders | 105 on disk the sheet never names (e.g. patient 136 series 11) — unlabelled videos, unusable |
-| frames per video | min 11, **median 53**, max 512 |
-| positives | 1,686 @50% (63.8%) / 1,524 @70% (57.6%) — 162 videos flip; **Dr. Reddy's call** |
+| patient dirs on disk | ~~412, not 413 — one patient is absent from the archive entirely~~ — corrected 2026-08-28: 413 patients, see above; not yet re-confirmed directly against the archive tree |
+| unresolved videos | ~~38 across 16 patients (worst: 157 x6, 63 x5, 413 x5, 393 x4)~~ — **stale, not re-measured against the fixed parser** |
+| orphan folders | ~~105 on disk the sheet never names (e.g. patient 136 series 11) — unlabelled videos, unusable~~ — **stale, not re-measured** |
+| frames per video | ~~min 11, median 53, max 512~~ — **stale, not re-measured** |
+| positives | ~~1,686 @50% (63.8%) / 1,524 @70% (57.6%) — 162 videos flip~~ — **corrected 2026-08-28: 1,750 @50% (64.0%) / 1,585 @70% (58.0%)**; the 162-video flip count is stale and not re-measured; the 50-vs-70% threshold choice is still **Dr. Reddy's call** |

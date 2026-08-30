@@ -6,8 +6,16 @@ here it is just: grayscale read -> resize(size,size) -> float32/255 -> [1,1,H,W]
 tensor coreml_validate._load_pairs builds. Re-check clDice after quantizing thin-vessel models.
 
     python -m src.export.quantize_int8                     # config-driven, proven artifacts
-    python -m src.export.quantize_int8 --model m.onnx --calib-dir imgs/ --out m.int8.onnx
+    python -m src.export.quantize_int8 --model m.onnx --calib-dir imgs/ --out m.int8.static.onnx
     python -m src.export.quantize_int8 --dynamic           # explicit data-free fallback
+
+OUTPUT NAMES CARRY THE METHOD. static PTQ and dynamic INT8 are different artifacts with
+different accuracy, and only the static one has ever been through the clDice gate. They used
+to share one default name ("<model>.int8.onnx"), so a bare run of this module silently
+replaced whichever build was already there — two provenances, one filename, no way to tell
+them apart on disk. Defaults are now `<model>.int8.static.onnx` / `<model>.int8.dynamic.onnx`,
+and an explicit --out onto an existing file that is not this method's own artifact is refused
+unless --force. See default_out() / _check_out().
 """
 import argparse, glob, os
 import numpy as np
@@ -15,6 +23,7 @@ import numpy as np
 _MODEL = "outputs/coronary_student_clgeodice/student.onnx"
 _CALIB = "data/processed/coronary/val/img"
 _CONFIG = "configs/edge_export.yaml"
+_METHOD_TAG = {"static_ptq": "static", "dynamic": "dynamic"}
 
 
 class PngCalibrationReader:
@@ -49,17 +58,39 @@ def _int8_cfg(config):
         return (yaml.safe_load(f) or {}).get("int8", {})
 
 
-def quantize(model, out=None, calib_dir=_CALIB, config=_CONFIG, dynamic=False):
+def default_out(model, method):
+    """`<model>.onnx` -> `<model>.int8.<static|dynamic>.onnx`. The method is in the FILENAME
+    so a static build cannot land on a dynamic one (or vice versa) and leave the artifact's
+    provenance — and therefore whether the clDice gate ever scored it — unknowable."""
+    stem = model[:-len(".onnx")] if model.endswith(".onnx") else model
+    return f"{stem}.int8.{_METHOD_TAG[method]}.onnx"
+
+
+def _check_out(out, method, force=False):
+    """Refuse to overwrite an existing artifact that is not this method's own. Re-running the
+    same method over its own (method-tagged) output is normal and allowed; landing a static
+    build on `student.int8.onnx` or `student.int8.dynamic.onnx` is the collision we are here
+    to stop. --force is the deliberate escape hatch."""
+    tag = _METHOD_TAG[method]
+    if os.path.exists(out) and f".int8.{tag}." not in os.path.basename(out) and not force:
+        raise FileExistsError(
+            f"refusing to overwrite {out} with a {tag} INT8 build: that filename is not this "
+            f"method's artifact, so the result's provenance (and which gate scored it) would "
+            f"be unrecoverable. Use --out {default_out(out, method)} or pass --force.")
+    return out
+
+
+def quantize(model, out=None, calib_dir=_CALIB, config=_CONFIG, dynamic=False, force=False):
     from onnxruntime.quantization import QuantType, quantize_dynamic, quantize_static
-    out = out or model.replace(".onnx", ".int8.onnx")
     cfg = _int8_cfg(config)
     method = "dynamic" if dynamic else cfg.get("method", "static_ptq")
+    if method not in _METHOD_TAG:
+        raise ValueError(f"unknown int8 method {method!r} in {config}")
+    out = _check_out(out or default_out(model, method), method, force)
     if method == "dynamic":
         quantize_dynamic(model, out, weight_type=QuantType.QInt8)
         print("wrote", out, "(dynamic INT8 — explicit fallback; config contract is static_ptq)")
         return out
-    if method != "static_ptq":
-        raise ValueError(f"unknown int8 method {method!r} in {config}")
 
     import onnxruntime as ort
     inp = ort.InferenceSession(model, providers=["CPUExecutionProvider"]).get_inputs()[0]
@@ -86,9 +117,12 @@ def quantize(model, out=None, calib_dir=_CALIB, config=_CONFIG, dynamic=False):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=_MODEL, help="fp32 .onnx from to_onnx.py")
-    ap.add_argument("--out")
+    ap.add_argument("--out", help="default: <model>.int8.<static|dynamic>.onnx")
     ap.add_argument("--calib-dir", default=_CALIB, help="processed (CLAHE'd) grayscale PNGs")
     ap.add_argument("--config", default=_CONFIG)
     ap.add_argument("--dynamic", action="store_true", help="data-free dynamic INT8 fallback")
+    ap.add_argument("--force", action="store_true",
+                    help="allow --out to overwrite another method's INT8 artifact")
     a = ap.parse_args()
-    quantize(a.model, a.out, calib_dir=a.calib_dir, config=a.config, dynamic=a.dynamic)
+    quantize(a.model, a.out, calib_dir=a.calib_dir, config=a.config, dynamic=a.dynamic,
+             force=a.force)

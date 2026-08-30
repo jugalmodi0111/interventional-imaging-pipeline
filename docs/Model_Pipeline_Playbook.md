@@ -1,6 +1,21 @@
 # Model & Pipeline Playbook — Interventional Angiography, Fluoroscopy & Nephrology
 
-**Target deployment: edge / laptop.** Every production recommendation below is something you can export and run on a laptop-class device (or a procedure-cart mini-PC). Heavy models appear only as *teachers* (trained on a GPU, then distilled) or as *offline* workstation steps where edge deployment is impossible (3D CT). Companion files: `Model_Selection_Matrix.xlsx` (scored, with the accuracy-floor gate), `Angiography_Dataset_Validation_Scoring.xlsx` (data), and the `interventional-imaging-pipeline/` repo scaffold.
+**Target deployment: edge / laptop, for the coronary/stenosis/catheter research track only.** This
+document predates the Dialygo pivot (2026-08) and describes that earlier, coronary-first plan.
+**Model One (the actual product, an AVF classifier) is hosted/central-serving per Dialygo B8 — it
+does not follow the teacher→distill→quantize→edge pattern below.** See `README.md` and
+`docs/PROJECT_TRACKER.md` for the current posture; treat everything below as research-track
+rationale, not the product plan, and cross-check any pick against `configs/` before trusting it.
+
+Every production recommendation below is something you can export and run on a laptop-class device
+(or a procedure-cart mini-PC). Heavy models appear only as *teachers* (trained on a GPU, then
+distilled) or as *offline* workstation steps where edge deployment is impossible (3D CT). Companion
+files named below — `Model_Selection_Matrix.xlsx` (scored, with the accuracy-floor gate) and
+`Angiography_Dataset_Validation_Scoring.xlsx` (data) — **are not in this repository** (verified: no
+`.xlsx` file exists anywhere in the tree as of this pass). Every accuracy floor cited below cites
+these two files as its authority; that authority cannot currently be checked. Either they were never
+committed, live elsewhere, or the floors were set without them — this needs a human answer, not an
+engineering guess.
 
 > **Rev 2 — clinical-safety hardening.** This version treats accuracy as a *floor*, not a tradeable term; adds calibration + abstention to the eval harness; carries clDice into the exit gates; and names cross-vendor validation and a regulatory gate as explicit stages. These changes matter because the deployment target is a live procedure, where the dangerous failure is "wrong but confident."
 
@@ -48,11 +63,13 @@ A foundation-model track runs in parallel: **CoroSAM / MedficientSAM / Rep-MedSA
 
 **Data:** ARCADE (task 2), Danilov (8,325 coronary images, COCO boxes).
 
-- **Qualifying edge pick:** **YOLOv8s + pseudo-label SSL** (~0.56). Plain YOLO11n (~0.54) is below the floor — step up to 's', add SSL/distillation, or fall back to RT-DETR-R18.
+- **Named pick — does NOT clear its own floor, not silently fixed here:** **YOLOv8s + pseudo-label SSL** (~0.56) is listed as the "qualifying" pick immediately below a stated floor of F1 ≥ 0.57 — ~~0.56 does not qualify against 0.57~~; this document contradicts its own gate rule in §0 ("a model must clear its problem's floor"). It is also the wrong architecture: the repo trains **`yolo11s`** (`configs/stenosis_yolo.yaml: model.name: yolo11s`), not YOLOv8s — no YOLOv8s run exists anywhere in this project. Plain YOLO11n (~0.54) is further below the floor. The actual measured result, patient-grouped and honest, is F1 0.291 (`PROJECT_TRACKER.md` §4.5) — well below either number quoted here, which describe an earlier, since-superseded estimate. Treat this whole bullet as stale pending a rewrite against `configs/stenosis_yolo.yaml` and the tracker.
 - **Accuracy teachers:** U-Mamba BOT (F1 0.6879 — the bar to chase) and StenUNet (F1 0.5348); distill or run as an offline second-read.
 - **Metrics:** F1 ≥ 0.57 with a **recall-weighted** operating point (missing a stenosis is the costly error); COCO AP/AR on Danilov.
 
 ### 2.3 Cerebral DSA (temporal) + catheter/guidewire tracking
+
+**Neither floor below has a config that implements it**, verified against `configs/`: `cerebral_dsa_temporal.yaml` is an orphan with no trainer, and `catheter_track.yaml` has no `target:` block at all (`PROJECT_TRACKER.md` §5). These floors are prose-only.
 
 **Data:** DIAS, DSCA, CathAction.
 
@@ -61,6 +78,16 @@ A foundation-model track runs in parallel: **CoroSAM / MedficientSAM / Rep-MedSA
 
 ### 2.4 Interventional nephrology / AV fistula (data desert — your priority)
 
+**Superseded in part:** this section still frames AVF imaging as a Dice-floor segmentation problem
+("lightweight U-Net initialized from coronary/peripheral vessel weights"). Model One, the AVF
+product actually being built, is a **classifier**, not a segmenter (`PROJECT_TRACKER.md` §9, §4.7) —
+`configs/avf_fistulography.yaml` declares `sensitivity`/`specificity` targets, not Dice. None of the
+three floors below (audio, tabular, imaging) has a config that implements it: `avf_audio.yaml` wraps
+a stub trainer, `avf_tabular.yaml` is an orphan (lightgbm/xgboost installed, never imported), and no
+`avf_fistulography` Dice config exists at all — the actual `avf_fistulography.yaml` floors are
+`sensitivity: null, specificity: null` (unsigned), a different metric entirely from what this
+section proposes.
+
 No public AV-fistula imaging benchmark, so this is transfer-learning + primary collection. Three edge-friendly tracks:
 
 - **Audio (bruit) — ship first, floor Sensitivity ≥ 0.85:** small ViT on blood-flow spectrograms (Zhou et al., *npj Digital Medicine* 2023) or CNN-BiLSTM (Ota 2020). Tiny enough for a wearable/phone. **Framed as screening/triage, not confirmation** — hold that line in any clinical messaging (reported specificity ~0.79–0.92).
@@ -68,6 +95,11 @@ No public AV-fistula imaging benchmark, so this is transfer-learning + primary c
 - **Imaging (ultrasound/fistulography), floor Dice ≥ 0.75:** lightweight U-Net initialized from coronary/peripheral vessel weights, fine-tuned on institutional ultrasound. **Requires data collection + IRB** — and note that student quality is gated on collecting that data (§3.4).
 
 ### 2.5 TAVR / structural heart
+
+**None of the three floors below has an implementing config**: `tavr_ct_seg.yaml` is an orphan with
+zero code references (`PROJECT_TRACKER.md` §5); no fluoroscopy or outcome/risk config exists in
+`configs/` at all. TAVR is listed in the tracker's workstream K as "not started — stubs or orphan
+configs only."
 
 - **Pre-procedural CT sizing (offline, GPU workstation — NOT edge), floor ICC ≥ 0.95:** 3D nnU-Net or SwinUNETR for aortic root / annulus / sinus / coronary-ostia, trained on **MM-WHS + Seg.A.** then domain-adapted to institutional TAVR CT. Reuse TAVI-PREP's measurement extraction (MeshDeformNet + 3D residual U-Net, 22 measurements). This is the *pick* for its problem precisely because no edge option exists.
 - **Intra-procedural fluoroscopy (edge), floor detection ≥ 0.85:** YOLO11n / AttWire-style detector for valve and catheter tracking on the cart.

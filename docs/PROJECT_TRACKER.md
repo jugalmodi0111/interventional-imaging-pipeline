@@ -1,124 +1,41 @@
-Continuing without touching your environment. Checking whether your other interpreter is intact — read-only.
+# Project Tracker - Interventional Imaging Pipeline
 
-Bash Check pyenv interpreter health
-IN
-P=/Users/jugalmodi/.pyenv/versions/3.12.9/bin/python
-$P -c "import numpy,cv2;print('pyenv OK numpy',numpy.__version__,'cv2',cv2.__version__)" 2>&1|tail -2
-echo "--- torch? ---"; $P -c "import torch;print('torch',torch.__version__)" 2>&1|tail -1
-echo "--- pytest? ---"; $P -m pytest --version 2>&1|tail -1
-
-OUT
-pyenv OK numpy 2.4.3 cv2 5.0.0
---- torch? ---
-torch 2.13.0
---- pytest? ---
-pytest 9.0.2
-pyenv env is intact — numpy 2.4.3, cv2 5.0.0, torch 2.13.0. Running the suite there.
-
-Bash Run suite under pyenv interpreter
-IN
-timeout 900 /Users/jugalmodi/.pyenv/versions/3.12.9/bin/python -m pytest tests/ -q 2>&1 | tail -5
-
-OUT
-  /Users/jugalmodi/Projects/Workspace/INU/Med/interventional-imaging-pipeline/tests/test_registry.py:71: UserWarning: registry: modality 'coronary_angiography' has non-boolean floor_ok=[True] (expected YAML true/false); failing safe to floor_ok=False (defer to human).
-    reg = load_registry(str(y))
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-842 passed, 52 warnings in 14.12s
-842 passed under pyenv. Project is fine — only the anaconda env is damaged. Now the mutation testing.
-
-Bash Run 6 mutations against full suite
-IN
-cat > /private/tmp/claude-501/-Users-jugalmodi-Projects-Workspace-INU-Med-interventional-imaging-pipeline/768bac1b-a35e-49a2-b710-2bcf91c3c04e/scratchpad/mutate.py <<'PYEOF'
-import subprocess, sys, pathlib
-REPO = pathlib.Path("/Users/jugalmodi/Projects/Workspace/INU/Med/interventional-imaging-pipeline")
-PY = "/Users/jugalmodi/.pyenv/versions/3.12.9/bin/python"
-IO = REPO / "src/data_prep/io_utils.py"
-RG = REPO / "src/serve/registry.py"
-
-MUTS = [
- ("1 group_key -> identity", IO,
-  "    m = _AVF_RE.match(name)", "    return name\n    m = _AVF_RE.match(name)"),
- ("2 audit_split_leakage -> no-op", IO,
-  '    train, val = _split_stems(out_dir, "train"), _split_stems(out_dir, "val")',
-  '    return None\n    train, val = _split_stems(out_dir, "train"), _split_stems(out_dir, "val")'),
- ("3 split_of -> always train", IO,
-  '    return "val" if h < val_frac * 1000 else "train"', '    return "train"'),
- ("6 ungrouped threshold deleted", IO,
-  "frac <= max_ungrouped_frac", "True"),
- ("4 floor_ok fails OPEN", RG,
-  "floor_ok = raw is True", "floor_ok = raw is not False"),
- ("5 resolve -> first entry", RG,
-  "    return registry.get(modality)", "    return next(iter(registry.values()), None)"),
-]
-
-for name, path, old, new in MUTS:
-    src = path.read_text()
-    if old not in src:
-        print(f"{name:34s} SKIPPED (anchor not found)"); continue
-    n = src.count(old)
-    path.write_text(src.replace(old, new))
-    r = subprocess.run([PY, "-m", "pytest", "tests/", "-q", "--no-header", "-x", "-p", "no:cacheprovider"],
-                       cwd=REPO, capture_output=True, text=True, timeout=900)
-    subprocess.run(["git", "checkout", "--", str(path.relative_to(REPO))], cwd=REPO, check=True)
-    tail = [l for l in r.stdout.strip().splitlines() if l.strip()][-1] if r.stdout.strip() else "NO OUTPUT"
-    killed = "failed" in tail or "error" in tail.lower()
-    first_fail = ""
-    if killed:
-        fails = [l for l in r.stdout.splitlines() if l.startswith("FAILED") or l.startswith("ERROR")]
-        first_fail = fails[0][:110] if fails else ""
-    print(f"{name:34s} ({n}x) {'KILLED  ' if killed else 'SURVIVED'} | {tail[:70]} | {first_fail}")
-PYEOF
-/Users/jugalmodi/.pyenv/versions/3.12.9/bin/python /private/tmp/claude-501/-Users-jugalmodi-Projects-Workspace-INU-Med-interventional-imaging-pipeline/768bac1b-a35e-49a2-b710-2bcf91c3c04e/scratchpad/mutate.py
-echo "=== TREE CLEAN ==="; git status --short; echo "(empty above = restored)"
-
-OUT
-1 group_key -> identity            (1x) KILLED   | 1 failed, 83 passed in 4.17s | FAILED tests/test_cadica_convert_audit.py::test_main_audits_its_own_output_and_reports_cadica_grouping
-2 audit_split_leakage -> no-op     (1x) KILLED   | 1 failed, 83 passed in 3.52s | FAILED tests/test_cadica_convert_audit.py::test_main_audits_its_own_output_and_reports_cadica_grouping
-3 split_of -> always train         (1x) KILLED   | 1 failed, 83 passed in 3.71s | FAILED tests/test_cadica_convert_audit.py::test_main_audits_its_own_output_and_reports_cadica_grouping
-6 ungrouped threshold deleted      (4x) KILLED   | 1 failed, 84 passed in 3.57s | FAILED tests/test_cadica_convert_audit.py::test_main_raises_when_written_stems_defeat_group_key
-4 floor_ok fails OPEN              (1x) KILLED   | 1 failed, 619 passed, 45 warnings in 8.20s | FAILED tests/test_registry.py::test_malformed_floor_ok_fails_safe_to_false[    floor_ok: flase\n]
-5 resolve -> first entry           (1x) KILLED   | 1 failed, 584 passed, 45 warnings in 7.75s | FAILED tests/test_orchestrator.py::test_supported_modality_with_no_registry_entry_defers_unsupported
-=== TREE CLEAN ===
-(empty above = restored)
-Mutation testing done — I ran it myself. All 6 killed. No vacuous guards.
-
-#	Mutation	Result	Killed by
-1	group_key → identity (all regex branches deleted)	KILLED	test_cadica_convert_audit.py::test_main_audits_its_own_output_and_reports_cadica_grouping
-2	audit_split_leakage → immediate no-op	KILLED	same
-3	split_of → always "train"	KILLED	same
-6	ungrouped-fraction threshold deleted (4 sites)	KILLED	test_main_raises_when_written_stems_defeat_group_key
-4	floor_ok fails open instead of safe	KILLED	test_registry.py::test_malformed_floor_ok_fails_safe_to_false
-5	resolve() → first entry regardless of modality	KILLED	test_orchestrator.py::test_supported_modality_with_no_registry_entry_defers_unsupported
-Tree restored clean after each — git status empty.
-
-The six properties that would be catastrophic if they silently broke — patient grouping, the leakage auditor, split determinism, the ungrouped canary, the floor_ok fail-safe, and modality resolution — are all genuinely guarded. Notably, mutation 6 was killed by a test literally named "raises when written stems defeat group_key": someone wrote a test specifically for the no-op case that fooled this repo four times. That's the guard agent 10 proved trips, pinned by a test that fails if it stops tripping.
-
-This is the answer agent 8 failed twice to produce.
-
-Final consolidated — 10 agents, 2 waves, plus my own verification
-Environment note: your anaconda env is still broken (numpy 2.2.6 + corrupted torch, from an agent's pip install). Your pyenv 3.12.9 env is healthy — numpy 2.4.3, cv2 5.0.0, torch 2.13.0 — and the suite runs 842 passed in 14.12s there. So the project is fine and you have a working interpreter; only the anaconda env needs repair, and I still haven't touched it.
-
-Fix before anything else
-The coronary headline is a one-image score. ds[0], unfiltered dataset, notebook bypasses train_seg.py's real harness. Dice 0.915 — the number in your clinical handover — has no held-out measurement behind it. Both "PASSED" gates also cannot fail: coreml_validate.py discards its own boolean, and no ONNX-INT8 validator exists. Cheap fix: the correct harness already exists and is tested.
-Three PHI leaks, all pre-real-data, all small fixes. Plaintext crosswalk at default perms; deid_done.jsonl pairing pseudonym with the real unshifted date+time when the shifted value was in scope two lines up; the human sign-off gate claiming SeriesDescription is scrubbed when it's in KEEP_TAGS.
-extract.py --mode synthetic against a mounted drive processes real DICOM with no gate. Four lines, mirroring scan/index_dicom.
-AngioCAD drops 82 videos silently — no comma handling in parse_series_spec. Corpus is 2,726, not 2,644. Every doc number reproduces bit-for-bit off the wrong denominator. Fix before relaunching the bake-off, not after.
-negatives_per_positive code default is 1.0 — the value three docs call clinically failing.
-Corrections to my own earlier reporting
-Aug-retrain gain is +0.012, not +0.026 (conf-sweep max vs training-curve value).
-"specificity 0.105 / PPV 0.228" conflates two different models.
-The bake-off is blocked because the angiocad kernel was overwritten with bake-off code — its corpus output no longer exists, so both kernels wait on something neither can produce.
-What held up under adversarial testing
-The leakage machinery — proven to trip on its own historical failure mode, and now proven pinned by mutation testing. split_of deterministic across PYTHONHASHSEED. The A1 negative-sampling fix real, deterministic, per-patient. Serve layer 12/12, including the honest admission that the AVF entry is unreachable dead code. Clearance gate 11/11 on the checks it claims.
-
-The pattern across all ten agents: where this project built a guard after being burned, the guard is real and provable. Where it built a claim before that discipline existed — the coronary gate, the de-id blacklist, the docs — the claim is assertion. The rigor is real; it's just unevenly distributed by date.
-
-Two things still need your call: the anaconda repair, and whether I start fixing the five items above.# Project Tracker - Interventional Imaging Pipeline
+> **Editorial note (2026-08-28 documentation reconciliation pass).** This file previously opened
+> with ~116 lines of raw agent-session transcript (a pasted bash-tool log from an earlier, independent
+> 10-agent audit session) ahead of this document's actual title. That transcript is removed here — it
+> was not documentation. One of its findings, the AngioCAD `parse_series_spec` bug, is independently
+> confirmed and reconciled throughout this file and in `docs/DATASETS.md` below (its own number for
+> that bug, "2,726, not 2,644," was itself an earlier, still-incomplete read of the same fix — further
+> corrected here to 2,734).
+>
+> **CORRECTION, same day:** the paragraph that stood here carried the transcript's other findings as
+> "unverified, requiring engineering triage." That was written by a documentation-scoped pass that
+> could not read the source files, and it is **wrong** — every one of those findings was independently
+> verified AND fixed on 2026-08-28, concurrently with that pass. Do not treat any of them as open:
+>
+> - **Crosswalk file permissions** — CONFIRMED and FIXED. `scripts/ingest_hdd.py` now writes the
+>   rows journal via `append_jsonl_0600` and unlinks it once `_keys/crosswalk.csv` is rebuilt, so
+>   exactly one 0600 file re-identifies the cohort. Pinned by `tests/test_ingest_hdd_phi.py`.
+> - **`deid_done.jsonl` pairing** — CONFIRMED and FIXED, and it was worse than reported: alongside the
+>   real unshifted date/time it also carried the real `SOPInstanceUID`, the real Study/Series UIDs and
+>   the raw source path. All now pseudonymised or dropped.
+> - **`SeriesDescription` / KEEP_TAGS** — CONFIRMED and FIXED. Moved to `REMOVE_TAGS`; `phi_audit.md`'s
+>   disposition column is now generated from `deid.REMOVE_TAGS`/`DATE_TAGS` rather than hand-written,
+>   so the sign-off text cannot drift from the scrub again. (`PatientID` was also falsely listed as
+>   scrubbed; it is pseudonymised.)
+> - **`coreml_validate.py` discarding its verdict** — CONFIRMED and FIXED. `sys.exit(cli())` now
+>   propagates PASS/FAIL to the process exit status, asserted by real-subprocess tests. The missing
+>   ONNX-INT8 validator was also written (`src/export/onnx_int8_validate.py`) and now enforces
+>   `gate.cldice_drop_max` from `configs/edge_export.yaml`.
+> - **Coronary Dice 0.915 as a single-image score** — CONFIRMED, NOT FIXED, and this one is live. See
+>   §4.4 and §9. `notebooks/kaggle_coronary_build.ipynb` cell 10 evaluates `ds[0]` — one sample — on a
+>   dataset built with no `stems=` filter. Separately confirmed: the 50 `val_*` pairs on disk split
+>   35 train / 15 val under this repo's own `split_of` rule, and the student trained on all 50, so
+>   "50 held-out coronary val pairs" in `RESULTS.md` is inaccurate.
 
 **Purpose:** single source of truth for *what is done* and *what is next*. Check boxes as you go.
-**Last updated:** 2026-08-25 · **Owner:** jugalmodi0111 · **HEAD at update:** `cd0ccc2` (main, clean)
-**Verified suite at update:** **839 passing** across 52 test files (`python -m pytest tests/ -q`)
+**Last updated:** 2026-08-28 · **Owner:** jugalmodi0111 · **HEAD at update:** `df24b93` (main, clean at HEAD — ~~previously listed as `cd0ccc2`, stale~~)
+**Verified suite at update:** **904 passing** across 55 test files (`python -m pytest tests/ -q`), re-verified 2026-08-28 — ~~previously "839 passing across 52 test files"~~. This number moves: several agents are landing tests concurrently in the working tree as this line is written, so treat it as a lower bound as of this timestamp and re-run the command rather than trust any static count, including this one.
 **Companion docs:** [`Model_Pipeline_Playbook.md`](Model_Pipeline_Playbook.md) (rationale) · [`DATASETS.md`](DATASETS.md) · [`INGEST_HDD_RUNBOOK.md`](INGEST_HDD_RUNBOOK.md) · [`Dialygo_Orientation_and_Requirements.md`](Dialygo_Orientation_and_Requirements.md) (B1–B9, binding) · [`INTENDED_USE.md`](INTENDED_USE.md)
 
 ---
@@ -137,7 +54,7 @@ Two things still need your call: the anaconda repair, and whether I start fixing
 
 | # | Workstream | State | Artifact on disk | Gate status |
 |---|---|---|---|---|
-| A | **DICOM ingest pipeline (T1.7)** | `x` **code-complete, 16/16 tasks** | `src/ingest/` (10 modules, 2,188 LOC) + `scripts/ingest_hdd.py` | Verified end-to-end on **synthetic DICOM only**. Real-drive run **blocked on B5/B9** (both flags `false`). |
+| A | **DICOM ingest pipeline (T1.7)** | `x` **code-complete, 16/16 tasks** | `src/ingest/` (10 modules, 2,436 LOC — ~~previously listed as 2,188~~; this dir has concurrent edits in flight as of this pass, re-run `wc -l src/ingest/*.py` before citing) + `scripts/ingest_hdd.py` | Verified end-to-end on **synthetic DICOM only**. Real-drive run **blocked on B5/B9** (both flags `false`). |
 | B | **Leakage guard (P0.2)** | `x` **fixed & tested** | `src/data_prep/io_utils.py` `_AVF_RE` | 200 frames/1 patient → 1 group, verified. `audit_split_leakage(avf_stems=…)` tripwire added. |
 | C | **Serve layer** | `x` **serves real verdicts (2026-08-16)** | `src/serve/` (10 modules) + `validity.py` | 3 audit criticals closed. **`/analyze` now returns a confident, undeferred `StudyReport`** from the real CoreML seg model (conf 0.9955). Modality router replaced by the B3 validity gate. |
 | D | **Event bus / observability** | `x` **new, done** | `src/serve/events.py` (94) + `runs/events.jsonl` + `GET /events` | Observe-only; 15 tests. |
@@ -156,9 +73,15 @@ Two things still need your call: the anaconda repair, and whether I start fixing
 
 ## 2. Code inventory — verified line-by-line 2026-08-15
 
-Total `src/`: **8,459 LOC** across 65 Python files (was 6,907/58 on 2026-08-15). Counts are exact (`wc -l`).
+Total `src/`: **8,741 LOC** across 66 Python files as of 2026-08-28 (~~previously listed as 8,459/65~~; was 6,907/58 on 2026-08-15). Counts are exact (`wc -l`), but `src/ingest/`, `src/export/`, `src/data_prep/`, and `src/models/` have concurrent edits in flight from other agents as this line is written — re-run `find src -name "*.py" | xargs wc -l | tail -1` before citing this number elsewhere.
 
-### 2.1 `src/ingest/` — Dialygo institutional ingest (2,188 LOC, 10 modules) `x`
+### 2.1 `src/ingest/` — Dialygo institutional ingest (2,436 LOC as of 2026-08-28, 10 modules) `x`
+
+*(Header previously said 2,188 LOC, but the table below already summed to 2,388 — a self-contradiction
+within this same section. Re-counted 2026-08-28: `pixel_deid.py` and `extract.py` had also drifted
+from the values in the table below; `deid.py` grew further mid-pass from concurrent PHI-hardening
+work landing in `src/ingest/` as this file was being edited — re-run `wc -l src/ingest/*.py` before
+citing any of these individual numbers.)*
 
 Built 2026-08-09 → 2026-08-13 across 16 planned tasks. **All modules import torch- and cv2-free** (lazy imports inside functions), expose `main()`, run as `python -m src.ingest.<module>`.
 
@@ -168,9 +91,9 @@ Built 2026-08-09 → 2026-08-13 across 16 planned tasks. **All modules import to
 | `manifest.py` | 197 | JSONL append, atomic JSON, resume state, sha256, provenance | `read_jsonl` opens `errors="replace"` (torn-UTF8 tolerant); `fsync_file()` helper added. |
 | `scan.py` | 282 | Phase 1 read-only drive walk, magic-byte typing | `onerror=` logs `kind:"unreadable_dir"`; missing roots raise `ValueError`; fsync before each checkpoint. |
 | `index_dicom.py` | 301 | Phase 2 header-only index + SOP dedupe | Writes `index_errors.jsonl` (`{path, reason[, kept_copy]}`); counts include `n_dicom_rows_seen`/`n_unparsed`. |
-| `deid.py` | 350 | HMAC pseudonyms, PS3.15 scrub, date shift, UID remap, crosswalk | 31 `REMOVE_TAGS`; `DEIDENTIFICATION_METHOD` is a **tuple** (multi-valued LO, 64-char VR limit). **Its CLI provisions the salt only — takes no `--mode`.** |
-| `pixel_deid.py` | 178 | OCR-free burned-in overlay detect + mask | Boxes are `(x,y,w,h)`; negative-origin clip **fixed** (plan code widened boxes). |
-| `extract.py` | 357 | VOI-LUT → 8-bit PNG frames + sidecars | Imports `sha256_file` from `manifest` (no duplicate). One source file per CLI invocation. |
+| `deid.py` | 380 (was 350) | HMAC pseudonyms, PS3.15 scrub, date shift, UID remap, crosswalk | 31 `REMOVE_TAGS`; `DEIDENTIFICATION_METHOD` is a **tuple** (multi-valued LO, 64-char VR limit). **Its CLI provisions the salt only — takes no `--mode`.** Growing as of this pass — concurrent PHI-hardening work in progress. |
+| `pixel_deid.py` | 182 (was 178) | OCR-free burned-in overlay detect + mask | Boxes are `(x,y,w,h)`; negative-origin clip **fixed** (plan code widened boxes). |
+| `extract.py` | 362 (was 357) | VOI-LUT → 8-bit PNG frames + sidecars | Imports `sha256_file` from `manifest` (no duplicate). One source file per CLI invocation. |
 | `labels.py` | 249 | CSV/COCO/mask-dir adapters + index↔label join | **PHI quarantine:** narrative column *names* recorded, values never parsed. |
 | `link.py` | 132 | Symlink clean frames → `data/raw/avf_fistulography` | Refuses to clobber real files/dirs; idempotent symlink replace. |
 | `doctor.py` | 204 | Health check | 4 checks: mounted / links / manifest / **no-PHI-in-repo**. Read-only, **no clearance gate by design**. Runs `[ok]` on this repo today. |
@@ -185,29 +108,41 @@ Built 2026-08-09 → 2026-08-13 across 16 planned tasks. **All modules import to
 - Task 16 (wiring: Makefile, `configs/ingest_sites.yaml`, docs) — done 2026-08-13
 - **Task 6 (standalone PHI-audit CLI) — deliberately SKIPPED**: covered inline by `write_phi_audit()` in the driver, which **stops the run** until `--ack-phi-audit`.
 
-### 2.2 `src/serve/` — decision layer (1,090 LOC, 9 modules) `~`
+### 2.2 `src/serve/` — decision layer (1,252 LOC, 10 modules) `~`
+
+*(Header previously said "1,090 LOC, 9 modules" while §1's row C already said "10 modules" — a
+self-contradiction within this file. Re-counted 2026-08-28, exact `wc -l`: `orchestrator.py` and
+`diagnosis.py` had also drifted well past their listed values, and `infer_cls.py` — present on disk
+and referenced by §2.5 below — was missing from this table entirely.)*
 
 | Module | LOC | State |
 |---|---|---|
-| `orchestrator.py` | 287 | `x` route → resolve → infer → typed findings → `StudyReport`. C2/C3/C4 fail-safes present. `RouterUnavailable` added. Video path **removed**. |
+| `orchestrator.py` | 335 (was 287) | `x` route → resolve → infer → typed findings → `StudyReport`. C2/C3/C4 fail-safes present. `RouterUnavailable` added. Video path **removed**. |
 | `app.py` | 193 | `x` FastAPI: `/health`, `/infer`, `/analyze` (400 on `kind=video`), **`/events`** (SSE). |
 | `stenosis_triage.py` | 105 | `x` pure, tested |
 | `registry.py` | 95 | `x` fail-safe `floor_ok` parse; file-handle leak fixed |
-| `validity.py` | 145 | `x` **NEW 2026-08-16** — B3 input gate (`assess_frame` + `ValidityGate`), numpy-only, no weights. Replaces the router as the orchestrator's decision source |
+| `validity.py` | 144 (was 145) | `x` **NEW 2026-08-16** — B3 input gate (`assess_frame` + `ValidityGate`), numpy-only, no weights. Replaces the router as the orchestrator's decision source |
 | `events.py` | 94 | `x` **NEW** — `EventBus`, `JsonlSink`, `RingBuffer` |
 | `report.py` | 64 | `x` `to_dict` now sanitizes numpy scalars (float32 500 fixed) |
-| `diagnosis.py` | 62 | `x` `det_to_findings` / `seg_to_finding` / `study_defer` |
+| `diagnosis.py` | 82 (was 62) | `x` `det_to_findings` / `seg_to_finding` / `study_defer` / `cls_to_finding` |
 | `infer.py` | 100 | `~` CoreML det/seg wrappers; untested against real weights |
+| `infer_cls.py` | 40 | `x` **added to this table 2026-08-28** — was missing despite §2.5 already documenting it. Hosted torch `ClsModel` for the AVF classifier; defer band enforced at the model boundary (Model One task 5, 2026-08-24). |
 
 **Deleted 2026-08-13** (video path, per audit P3 + user decision): `temporal_vote.py`, `track.py`, `realtime.py`, `stenosis_infer.py`, `predict_image.py`, plus their tests (49 tests removed) and the `track`/`track-eval`/`realtime` Makefile targets.
 
 ### 2.3 Other implemented modules
 
-- `src/data_prep/` (1,626 LOC): `io_utils.py` (431 — grouping, splits, `audit_split_leakage`), `cathaction_to_yolo` (210), `cadica_to_yolo` (203), `autolabel_gdino` (148), `danilov_to_yolo` (140), `harmonize` (108), `balance` (94), `verify_sequence` (61), `preprocess` (50), `dca1_to_nnunet` (48), `arcade_to_coco` (31)
-- `src/eval/` (809 LOC): `cls_metrics.py` (**62 — NEW 2026-08-24**, confusion vocabulary + threshold-at-target-sensitivity + bootstrap CIs; pure numpy), `calibration.py` (167 — ECE, Brier, reliability, temperature scaling, AUROC, OOD), `annotation_qa` (148), `temporal_vote` (185 — **restored 2026-08-16, offline cine scoring only**), `metrics` (77 — Dice/clDice/CLGeoDice/HD95), `val_by_source` (56), `audit` (25)
-- `src/export/` (332 LOC): `quantize_int8.py` (**94 — rewritten to real static PTQ 2026-08-13**, was a 10-line dynamic stub), `yolo_to_coreml` (89), `coreml_validate` (83), `to_coreml` (52), `to_onnx` (14)
-- `src/train/` (943 LOC): `train_detector.py` (334), `train_seg.py` (233), `train_classifier.py` (**185 — NEW 2026-08-24**, Model One: patient-grouped dataset, head-only loop, temperature fit, operating point, `head.pt`+`metrics.json`, CLI), `train_audio.py` (**8 — stub**)
-- `src/models/` (328 LOC): `distill` (108), `frozen_backbone.py` (**53 — NEW 2026-08-24**, timm-lazy factory + frozen-backbone/linear-head classifier + offline `test-tiny`), `clgeodice` (59), `grounded_sam` (62), `seg_student` (46)
+*(All five totals below re-counted 2026-08-28 with exact `wc -l`. `src/data_prep/` was both
+significantly wrong AND missing a whole file; `src/export/` and `src/models/` have concurrent edits
+landing as this file is being written — including a brand-new `onnx_int8_validate.py`, which did not
+exist when this section was last written and directly closes a gap noted in §9. Re-run `wc -l` on
+any of these directories before citing a number from this list elsewhere.)*
+
+- `src/data_prep/` (**2,397 LOC, was 1,626 — off by ~800 LOC and missing a whole file**): `io_utils.py` (662, was listed 431 — grouping, splits, `audit_split_leakage`), `cadica_to_yolo` (513, was listed 203 — more than double), `cathaction_to_yolo` (210), `danilov_to_yolo` (168, was listed 140), `angiocad_to_cls.py` (**235 — landed 2026-08-23, was entirely absent from this inventory** despite being live code with 32 tests; video-level AngioCAD adapter, see §2.5/§10), `harmonize` (164, was listed 108), `autolabel_gdino` (148), `balance` (96, was listed 94), `verify_sequence` (61), `preprocess` (50), `dca1_to_nnunet` (48), `arcade_to_coco` (31). (`dsca_sequences.py`, 11 LOC, is a stub and tracked separately in §2.4.)
+- `src/eval/` (809 LOC — unchanged, re-verified): `cls_metrics.py` (**62 — NEW 2026-08-24**, confusion vocabulary + threshold-at-target-sensitivity + bootstrap CIs; pure numpy), `calibration.py` (167 — ECE, Brier, reliability, temperature scaling, AUROC, OOD), `annotation_qa` (148), `temporal_vote` (194, was listed 185 — **restored 2026-08-16, offline cine scoring only**), `metrics` (77 — Dice/clDice/CLGeoDice/HD95), `val_by_source` (56), `audit` (25)
+- `src/export/` (**509 LOC, was 332 — a new validator has landed since this was last counted**): `onnx_int8_validate.py` (**118 — NEW, not present at last count; directly answers the "no ONNX-INT8 validator exists" gap noted in §9's changelog reconciliation**), `quantize_int8.py` (128, was listed 94), `yolo_to_coreml` (89), `coreml_validate` (108, was listed 83), `to_coreml` (52), `to_onnx` (14)
+- `src/train/` (943 LOC — unchanged, re-verified): `train_detector.py` (334), `train_seg.py` (233), `train_classifier.py` (**185 — NEW 2026-08-24**, Model One: patient-grouped dataset, head-only loop, temperature fit, operating point, `head.pt`+`metrics.json`, CLI), `train_audio.py` (**8 — stub**)
+- `src/models/` (336 LOC, was 328): `distill` (108), `frozen_backbone.py` (61, was listed 53 — timm-lazy factory + frozen-backbone/linear-head classifier + offline `test-tiny`), `grounded_sam` (62), `clgeodice` (59), `seg_student` (46)
 
 ### 2.4 Stubs and TODO shells — the honest list (4 remaining)
 
@@ -395,9 +330,18 @@ since landed** (2026-08-23) and is the AngioCAD half of this, so Task 8 is now o
 `timm` **is now installed** (1.0.28 — it was already declared in `requirements.txt`; only the env
 lagged). No real or proxy frames are on disk, so the bake-off still cannot run.
 
-- [x] **AngioCAD acquired, probed and turned into a corpus — 2026-08-25**, Kaggle kernel
-  `jugalmodi0111/angiocad`, 43 min end-to-end. The `3.4 TB` blocker was **false** (see below).
-  Corpus: **2,606 videos / 412 patients / 10,421 frames @224 = 0.29 GB**, 1,658 pos / 948 neg.
+- [x] **AngioCAD acquired, probed and turned into a corpus — 2026-08-25, corpus size corrected
+  2026-08-28.** Kaggle kernel `jugalmodi0111/angiocad`, 43 min end-to-end. The `3.4 TB` blocker was
+  **false** (see below). ~~Corpus: 2,606 videos / 412 patients / 10,421 frames @224 = 0.29 GB, 1,658
+  pos / 948 neg.~~ **Corrected 2026-08-28**: `parse_series_spec` was silently dropping
+  comma-separated series specs (e.g. `"3,4,11,12,13"`) and reversed ranges (e.g. `"7-6"`),
+  conflating them with genuinely blank cells. Re-run against the real `AngioCAD_Labels.xlsx`, the
+  corpus is **2,734 videos / 413 patients**, **1,750 positive (64.0%) at a 50% severity cut / 1,585
+  positive (58.0%) at 70%**. Every other number in this file that cites 2,606/2,644/1,686/1,524/98.6%
+  was computed off the undercounted corpus and is corrected at each occurrence below, not silently
+  overwritten. The frame count (10,421 @224) and the derived "38 unresolved / 105 orphan" figures
+  further down have **not** been re-measured against the fixed parser — flagged as needing
+  re-measurement, not re-guessed, at their occurrence.
 - [ ] Backbone bake-off — the corpus now exists, so this is unblocked *except* for batching.
   `train_classifier.train` does a FULL-BATCH forward: `model(xt)` on every frame at once. The input
   tensor is not the problem (10,421 x 1 x 224 x 224 float32 = **2.09 GB**, fine); the problem is the
@@ -434,11 +378,16 @@ lagged). No real or proxy frames are on disk, so the bake-off still cannot run.
 
 ---
 
-## 6. Test suite — **836 passing, 52 files** (verified 2026-08-24)
+## 6. Test suite — **904 passing, 55 files** (re-verified 2026-08-28; ~~previously "836 passing, 52 files" verified 2026-08-24~~)
 
-Trajectory: 374 (main, pre-ingest) → 470 (ingest tasks 1–5) → 572 (tasks 7–12 + robustness) → 616 (tasks 13–15) → 641 (P0.1) → 642 (task 16) → **606** (video path deleted, −49 +7) → 621 (static PTQ +6, events +15) → 702/768 (stenosis audit rounds 2–3) → 800 (AngioCAD adapter +32) → **836** (Model One scaffold +36).
+This is the third different count this file has carried at three different section headers (here,
+§0 header, and formerly §8 item 5) — see §9 for the drift and why it happens (this repo has a real,
+fast test suite and several agents landing work concurrently, so any static count is a snapshot, not
+a fact). **Re-run `python -m pytest tests/ -q` yourself before citing a number from this section.**
 
-Ingest coverage: clearance, manifest, scan, index, fixture, deid (53), pixel_deid (11), extract (16), labels (15), link (11), doctor (18), group_key (13). Serve coverage: orchestrator, analyze endpoint, diagnosis, registry, report, router, triage, events (15). 52 warnings, all pre-existing (pydicom VR format, unclosed-file ResourceWarnings in `test_registry.py`).
+Trajectory: 374 (main, pre-ingest) → 470 (ingest tasks 1–5) → 572 (tasks 7–12 + robustness) → 616 (tasks 13–15) → 641 (P0.1) → 642 (task 16) → **606** (video path deleted, −49 +7) → 621 (static PTQ +6, events +15) → 702/768 (stenosis audit rounds 2–3) → 800 (AngioCAD adapter +32) → 836 (Model One scaffold +36) → 842 (bake-off backbone-registry fixes +3) → 852 (further concurrent hardening, 2026-08-28) → **904, 55 files** (concurrent PHI-hardening + ONNX-INT8 validator + coreml_validate work landing as of this pass — see §2.3, §9).
+
+Ingest coverage: clearance, manifest, scan, index, fixture, deid (53), pixel_deid (11), extract (16), labels (15), link (11), doctor (18), group_key (13), plus a new PHI-disposition suite landing concurrently as of this pass. Serve coverage: orchestrator, analyze endpoint, diagnosis, registry, report, triage, events (15) — ~~router~~ (`test_router.py` was deleted with `src/serve/router.py` on 2026-08-16; it should not appear in this list, and its presence above was stale). 52 warnings, all pre-existing (pydicom VR format, unclosed-file ResourceWarnings in `test_registry.py`).
 
 ---
 
@@ -493,7 +442,7 @@ For validating code, the backbone bake-off, and GPU workflow on real X-ray angio
 4. **Approve the Model One plan** (± Task 8 adapters) and pick an execution style.
 
 **Buildable now, no blockers:**
-5. ~~Model One scaffold, tasks 1–7~~ — **DONE 2026-08-24** (839 tests). ~~AngioCAD not downloaded~~ — **acquired 2026-08-25**, corpus built (2,606 videos / 412 patients). Next: feature-cache the frozen backbone so the bake-off can run without OOM, then the bake-off
+5. ~~Model One scaffold, tasks 1–7~~ — **DONE 2026-08-24** (839 tests at the time; see header for the current count). ~~AngioCAD not downloaded~~ — **acquired 2026-08-25**, corpus built (~~2,606 videos / 412 patients~~ — **corrected 2026-08-28 to 2,734 videos / 413 patients**, see §4.7 and §10). Next: feature-cache the frozen backbone so the bake-off can run without OOM, then the bake-off
 6. Proxy training path: AngioCAD adapter → train → CARDIAG external test (needs Kaggle/Colab GPU)
 7. `pip install timm`; decide router-vs-validity-gate
 8. AVF audio proof-of-concept on the open figshare set (replaces the `train_audio.py` stub)
@@ -514,24 +463,138 @@ For validating code, the backbone bake-off, and GPU workflow on real X-ray angio
 
 ## 9. Known documentation contradictions — to reconcile
 
-Catalogued 2026-08-09, several still open as of this update:
+Catalogued 2026-08-09, revised 2026-08-15, **fully re-verified against the working tree 2026-08-28**
+(a documentation-focused pass, no `src/`/`tests/`/`configs/` edits made by that pass). This list was
+itself found to be stale in both directions — it claimed some things were fixed that weren't fully
+fixed, and its own test-count/LOC claims had drifted from the file's other sections. Every row below
+was checked against the actual file/line named, not carried forward from the previous version of
+this list.
 
-- [x] Test count — **fixed by this update** (was showing both "150 passing" and "642 passing" in one file)
-- [x] Stage-4 AVF described as "lightweight U-Net from coronary weights" — **corrected**: Model One is classification, explicitly NOT Dice/segmentation
-- [x] Golden invariant (edge/cart) vs B8 (hosted) — **now scoped** as research-track guidance
-- [ ] `Model_Pipeline_Playbook.md:68` still mandates **Dice ≥ 0.75 for AVF imaging** — contradicts `avf_fistulography.yaml` ("NOT Dice")
-- [ ] **Danilov patient count: 100 (`DATASETS.md`) vs 64 (this tracker, `STAGE2_SETUP.md`)** — all split/leakage reasoning depends on this number; unresolved
-- [ ] DSA floor: Dice ~0.85 (tracker) vs ≥ 0.80 (playbook)
-- [ ] `src/serve/app.py:1-9` still documents an air-gapped localhost service; B8 mandates hosted
-- [ ] `docs/HOSTING_QUESTIONNAIRE.md` is **1 byte** — needs 8 answers (jurisdiction, whether inference leaves the Institute's network and what exactly leaves — this determines whether hosted serving is even legal under B5, weights custody, PHI-in-transit, retention, auth, unreachable behavior, DINOv3 licence)
-- [ ] Realignment plan checkboxes T1.1/T1.3/T1.5/T1.6/T1.7 show `[ ]` though all are built
-- [ ] Orchestrator plan shows 80/85 steps unchecked though phases B0/C/D/E landed
-- [~] `DATASETS.md` predates the 2026-08-13 survey — **AngioCAD now verified and documented 2026-08-23 (no bounding boxes; classification-only — see DATASETS.md)**; CARDIAG/CardioSyntax + the AVF findings still to add
-- [ ] No `pipelines/stage5_*.md` though Stage 5 is in the roadmap
+**Genuinely fixed, re-confirmed 2026-08-28:**
+
+- [x] Test count self-contradiction inside this file — the header (§0), §6, and two other spots
+  previously showed three *different* counts (839 / 836 / a stale trajectory). **Reconciled this
+  pass**: all now read from one re-verified number (904 passing / 55 files as of 2026-08-28), with
+  an explicit note that it is a moving target under concurrent development, not a fixed fact.
+- [x] Stage-4 AVF described as "lightweight U-Net from coronary weights" in the old Part II — still
+  true of Part II (preserved verbatim, historical), but Part I and `configs/avf_fistulography.yaml`
+  correctly describe Model One as classification, not segmentation. No live contradiction remains in
+  the current (Part I) tracker text.
+- [x] Golden invariant (edge/cart) vs B8 (hosted) — correctly scoped in Part I §0 as research-track
+  guidance that does not govern Model One.
+- [x] `router.decide_modality` referenced in `docs/INTENDED_USE.md` as if still live — **fixed in this
+  pass**: corrected to `ValidityGate.classify`, with a note on when and why the router was replaced
+  then deleted.
+- [x] `docs/INTENDED_USE.md`'s tracker cross-references (§3.5, §3.2, §3.1, §3.3, §3.3b) all pointed
+  into this tracker's superseded Part II section numbering and resolved to unrelated Part I sections
+  by coincidence of number — **fixed in this pass**, repointed to the correct current sections
+  (workstream table + §4.4/§4.5/§4.6/§2.4) with a note on why the old numbers were wrong.
+- [x] `docs/STAGE2_SETUP.md`, `docs/STAGE2_PHASE1_POA.md`, and `pipelines/stage2_stenosis.md` still
+  named `src/serve/temporal_vote.py` and `src/serve/stenosis_infer.py` as if live — **fixed in this
+  pass**: `temporal_vote.py` corrected to its real 2026-08-16 location (`src/eval/temporal_vote.py`,
+  offline-only), and `stenosis_infer.py` flagged as deleted 2026-08-13 and **never restored** (it was
+  previously described as still wiring `aggregate_sequence`, which is no longer true of anything in
+  this repo).
+- [x] `docs/STENOSIS_ARCHITECTURE_AUDIT.md` self-contradicted: an "Open judgement call" section
+  argued the shipped `negatives_per_positive` was 1.0 ("~3× the guidance ceiling"), ~45 lines after
+  the same document's own status table said A1 was "FIXED + SWEPT 2026-08-23." The shipped value is
+  0.25, and the sweep that settled it is described earlier in the same file. **Fixed in this pass** —
+  the section is struck and replaced with the resolved reading, per this file's own convention of
+  visible correction rather than silent rewrite.
+- [x] `docs/Model_Pipeline_Playbook.md` named "YOLOv8s + pseudo-label SSL (~0.56)" as the qualifying
+  stenosis pick against the document's own stated floor of F1 ≥ 0.57 — the pick fails the gate it is
+  presented as clearing, and the repo trains `yolo11s`, not YOLOv8s, per `configs/stenosis_yolo.yaml`.
+  **Fixed in this pass** — flagged inline as self-contradictory and pointed at the real config and
+  the real measured result (F1 0.291).
+- [x] `docs/Model_Pipeline_Playbook.md` and `README.md` cited `Model_Selection_Matrix.xlsx` and
+  `Angiography_Dataset_Validation_Scoring.xlsx` as the scoring authority behind every accuracy floor
+  in the playbook — **neither file exists anywhere in this repository** (verified: no `.xlsx` file
+  of any name exists in the tree as of this pass). **Flagged in this pass**, not resolved — this
+  needs a human answer (were they ever committed? do they live elsewhere? were floors set without
+  them?), which engineering cannot supply.
+- [x] `README.md` was entirely pre-pivot — title said "(edge / laptop)", claimed "every production
+  model on-device," presented coronary/stenosis/catheter as the product, never mentioned Dialygo,
+  AVF, Model One, B8, or hosted serving, and advertised `src/serve` realtime overlay, ByteTrack, and
+  `predict_image` as shipped, all deleted 2026-08-13. **Rewritten in this pass.**
+- [x] `notebooks/README.md` documented only 2 of the 8 notebooks in `notebooks/`, and missed that
+  `colab_catheter_build.ipynb` (imports the deleted `src.serve.track`) and `predict_demo.ipynb`
+  (imports the deleted `src.serve.predict_image`) fail on import. **Rewritten in this pass** — all 8
+  documented, both broken ones flagged with the specific dead import.
+- [x] **The AngioCAD corpus count changed today.** `parse_series_spec` was silently dropping
+  comma-separated series specs and reversed ranges, undercounting the corpus. Fixed 2026-08-28; the
+  corpus is now 2,734 videos / 413 patients, 1,750 positive (64.0%) @50% / 1,585 positive (58.0%)
+  @70% — every prior figure (2,606/2,644/1,686/1,524/98.6%) is struck at each occurrence in this
+  file, in `docs/DATASETS.md`, and in `docs/PROJECT_TRACKER.md`'s own editorial-note preamble (which
+  itself carried a *third*, different, also-outdated figure of "2,726"). The downstream "38
+  unresolved" / "105 orphan folders" / frame-count-distribution figures were **not** re-measured
+  against the fixed parser and are marked as needing re-measurement, not re-guessed.
+
+**Still open, re-confirmed 2026-08-28 (not touched by this pass — outside documentation-only scope,
+or requiring a decision this pass cannot make):**
+
+- [ ] `Model_Pipeline_Playbook.md` §2.4 still mandates **Dice ≥ 0.75 for AVF imaging** in prose,
+  while `configs/avf_fistulography.yaml` declares `sensitivity`/`specificity` targets and Model One
+  is a classifier — **flagged inline in this pass** (see the playbook itself), but the underlying
+  document still needs a real rewrite of that section, not just a warning label.
+- [ ] **Danilov patient count: `DATASETS.md` says "8,325 img / 100 patients"; `STAGE2_SETUP.md` says
+  "only 64 patients."** Re-confirmed both still say this as of 2026-08-28. All split/leakage
+  reasoning for the stenosis detector depends on this number (see §4.5's val-composition analysis) —
+  unresolved, and outside this pass's scope to adjudicate without re-deriving the patient count from
+  the raw Danilov metadata.
+- [ ] DSA floor: this tracker's Part II historically said "~0.85"; the playbook states a **floor** of
+  Dice ≥ 0.80 with a separate, lower **realistic target** of ~0.85 for the edge pick specifically
+  (not a floor). Worth restating in one place with floor and target clearly distinguished, but not a
+  live blocking contradiction — no DSA config or trainer exists yet either way (§2.4 stub list).
+- [ ] `src/serve/app.py`'s module docstring (verified this pass, lines 1-8) already mentions **both**
+  the network-API topology and an air-gapped-localhost note for cath labs — it is not purely
+  air-gapped-only as this item previously claimed, but it also doesn't clearly state the B8 hosted
+  posture as the primary Model One deployment target. Worth tightening, not a hard contradiction.
+- [ ] `docs/HOSTING_QUESTIONNAIRE.md` is still **1 byte** (re-confirmed 2026-08-28) — needs the same 8
+  answers as before (jurisdiction, whether inference leaves the Institute's network and what exactly
+  leaves, weights custody, PHI-in-transit, retention, auth, unreachable behavior, DINOv3 licence).
+- [ ] Realignment plan checkboxes T1.1/T1.3/T1.5/T1.6/T1.7 — not re-checked this pass; flagging as
+  unverified-but-carried-forward rather than silently re-asserting "still open" without looking.
+- [ ] Orchestrator plan shows steps unchecked though phases B0/C/D/E landed — same caveat, not
+  re-checked this pass.
+- [~] `DATASETS.md`'s AngioCAD section was corrected in this pass for the 2026-08-28 corpus-count
+  fix (see above), but the file predates the full CARDIAG/CardioSyntax + AVF-survey write-up promised
+  in the prior version of this row — still to add.
+- [ ] No `pipelines/stage5_*.md` (re-confirmed 2026-08-28: `pipelines/` holds stage0 through stage4,
+  including stage2_5 and stage3b, but nothing for Stage 5) though Stage 5 (regulatory) is in the
+  roadmap and `docs/INTENDED_USE.md` exists as its content — arguably `INTENDED_USE.md` already fills
+  this role and the missing file is not itself a gap, but that judgment call hasn't been made
+  explicitly anywhere.
+- [x] ~~Four unverified findings from the removed transcript needing engineering triage~~ —
+  **SUPERSEDED 2026-08-28.** Written by a documentation-scoped pass that could not read source. All
+  four were verified the same day; three are FIXED (crosswalk 0600 + journal unlinked;
+  `deid_done.jsonl` pseudonymised — it also carried the real SOP/Study/Series UIDs and the raw source
+  path, worse than first reported; `SeriesDescription` scrubbed and the audit disposition now
+  generated from `REMOVE_TAGS` rather than hand-written). See the editorial note at the top of this
+  file and the 2026-08-28 changelog entries.
+- [!] **The coronary gate has no held-out measurement behind it — CONFIRMED 2026-08-28, OPEN.**
+  This is the fourth transcript finding, and it is real. `notebooks/kaggle_coronary_build.ipynb`
+  cell 10 defines `def quick_eval(m): x,y,_ = ds[0]; ...` — a **single sample, index 0** — and builds
+  `TeacherCacheDataset` with **no `stems=`**, so no held-out filter is applied. "Best mid-run
+  0.927/0.980" is therefore the best of ~20 single-image probes, i.e. a max over noise.
+  Independently confirmed: the 50 `val_*` pairs on disk split **35 train / 15 val** under this repo's
+  own `split_of` rule, and the student trained on all 50 — so `RESULTS.md`'s "50 held-out coronary
+  val pairs" is inaccurate, and the CoreML/INT8 gate numbers are measured on frames the student saw.
+  (For a *relative* fp32-vs-compressed drop that is a weak objection — same model, same data. For the
+  0.915 headline it is fatal.) **Every "coronary gate PASSED" claim in this file, and the figure given
+  to the clinical partner in `Clinical_Partner_Handover.docx`, rests on this.**
+  The fix is cheap and needs no new code: `train_seg.train()` already does the grouped split, the
+  filtered loaders, whole-loop scoring and `qualifies()`. The blocker is **data, not compute** —
+  `data/raw/` is empty (0 B) so the processed corpus cannot be regenerated locally. Once restored,
+  re-scoring the existing `student.pt` is a CPU job of seconds; no teacher cache, no GPU.
+  Two gaps to close in the same pass: `configs/coronary_seg.yaml` has no `train.val_frac` (the split
+  silently uses 0.2) and its `target:` carries only `dice: 0.75` — **no clDice floor**, so even a
+  correct `qualifies()` run leaves the connectivity half of the headline ungated.
 
 ---
 
 ## 10. Changelog — entries since the 2026-08-13 rebuild
+
+- **2026-08-28** — **`parse_series_spec` was silently dropping comma-separated series specs and reversed ranges, undercounting the AngioCAD corpus by 128 videos. Fixed; every downstream count below is corrected, not re-derived by guess.** The parser handled a single series number or a simple ascending range (e.g. `"7"`, `"3-5"`) but treated a comma-separated list (e.g. `"3,4,11,12,13"`) and a reversed range (e.g. `"7-6"`) the same as a blank cell — silently dropping those series rather than erroring or logging. Re-run against the real `AngioCAD_Labels.xlsx`, the corpus is **2,734 videos / 413 patients** (~~was 2,606 videos / 412 patients~~), **1,750 positive (64.0%) at a 50% severity cut / 1,585 positive (58.0%) at 70%** (~~was 1,686 @50% (63.8%) / 1,524 @70% (57.6%)~~). This repository's own prior read of this same bug (an earlier, independent audit pass, preserved in this file's editorial note above) measured "2,726, not 2,644" — a partial fix that had not yet caught the reversed-range case; **2,734 is the number to use going forward**, verify against the working tree before citing further. **Not yet re-measured against the fixed parser** — flagged, not guessed: the frame count (10,421 @224 in the 2026-08-25 entry below), and the derived "38 unresolved videos" / "105 orphan folders" figures in that same entry, which were computed against the undercounted 2,644-video denominator. Re-run `notebooks/kaggle_angiocad_acquire.ipynb` against the fixed adapter before quoting those two figures again.
 
 - **2026-08-25 (b)** — **The bake-off notebook landed, and building it exposed two defects that made a real backbone impossible to load.** Neither was reachable from any existing test, because every test used the offline `test-tiny` backbone — so the suite was fully green while `configs/avf_fistulography.yaml` named a model the code cannot build.
 
@@ -544,7 +607,7 @@ Catalogued 2026-08-09, several still open as of this update:
 
   **`3.4 TB extracted` is REFUTED — 121,566 PNG entries totalling 16.37 GB, expansion ratio 1.00x.** A **208x** overstatement, read straight out of the RAR headers without extracting anything. The figure was never sourced: it appears nowhere in the Zenodo record, and PNG is already DEFLATE-compressed so a 200x expansion was never physically possible. `/kaggle/temp` had **1,102 GB free** — disk was never within two orders of magnitude of being a constraint, and "a selective-extraction strategy has to be planned first" blocked this track for two days on a number nobody had checked. `docs/DATASETS.md` corrected (old claim struck, not deleted).
 
-  **`angiocad_to_cls`'s assumed layout was CORRECT** — `<root>/<patient>/<series>/` resolves **2,606 of 2,644 videos (98.6%)** against the real tree (`AngioCAD_Dataset/<patient>/<series>/frame_%04d.png`). That assumption had never been tested: the adapter was written and unit-tested against the 43 kB sheet alone. Also measured: **412 patient dirs, not 413** — one patient is absent from the archive entirely; **38 unresolved videos** across 16 patients (157 x6, 63 x5, 413 x5) where a series spec parses cleanly but names no folder; **105 orphan folders** the sheet never names (series numbers run past its range, e.g. patient 136 series 11) — real videos with no label, unusable; frames per video min 11 / **median 53** / max 512. Positive rates reproduce the sheet-only prediction exactly: **1,686 @50% (63.8%) / 1,524 @70% (57.6%)**, 162 videos flipping — still **Dr. Reddy's call**, still open.
+  **`angiocad_to_cls`'s assumed layout was CORRECT** — `<root>/<patient>/<series>/` resolves ~~2,606 of 2,644 videos (98.6%)~~ against the real tree (`AngioCAD_Dataset/<patient>/<series>/frame_%04d.png`). **These counts are superseded by the 2026-08-28 `parse_series_spec` fix at the top of this changelog — use 2,734 videos / 413 patients, not the numbers in this historical entry.** That assumption had never been tested: the adapter was written and unit-tested against the 43 kB sheet alone. Also measured at the time: ~~412 patient dirs, not 413~~ — the corrected 2026-08-28 patient count is 413; whether the earlier "412, one patient missing" reading was itself a `parse_series_spec` artifact has not been separately confirmed and should not be assumed without re-checking; **38 unresolved videos** across 16 patients (157 x6, 63 x5, 413 x5) where a series spec parses cleanly but names no folder; **105 orphan folders** the sheet never names (series numbers run past its range, e.g. patient 136 series 11) — real videos with no label, unusable; frames per video min 11 / **median 53** / max 512 — **these three figures (38 unresolved, 105 orphan, the frame-count distribution) have not been re-measured against the fixed parser and should be treated as unverified until they are.** Positive rates: ~~1,686 @50% (63.8%) / 1,524 @70% (57.6%)~~ — corrected 2026-08-28 to **1,750 @50% (64.0%) / 1,585 @70% (58.0%)**; 162 videos flipping — still **Dr. Reddy's call**, still open (that flip count is also unverified against the fixed parser).
 
   **`group_key` gained `_ANGIOCAD_RE`** (2026-08-24, 3 tests): corpus stems are `angiocad_<patient>_s<NN>`, which without a rule fall through to `return name` and group per SERIES. 277 of 413 patients have videos on both coronary sides, so that scatters a patient across train and val — P0.2 / CADICA / AVF a fourth time, and silent, because a per-series split has every group unique by construction and passes any group-overlap audit. Cell 6 now asserts one-group-per-patient and crashes rather than emitting a leaky corpus.
 
@@ -556,7 +619,7 @@ Catalogued 2026-08-09, several still open as of this update:
 
   **What this does NOT mean.** Nothing has been trained on a real image. B5/B9 remain unexecuted, no AVF frames exist, the backbone bake-off is unrun (`test-tiny` is a 32-dim seeded conv — never a real backbone), and B7 floors are `null`, so the registry entry ships `floor_ok: false` and **every AVF finding defers by construction**. The registry entry is also **unreachable**: the decision source is a validity gate, not a modality discriminator, so it always returns its configured `validity.modality` (`coronary_angiography`) and `resolve()` never lands on AVF. The entry declares wiring, not capability. One honest artifact of the synthetic setup worth recording: on perfectly separable toy data `temperature_scale` drives T to its search floor (0.05), so ECE reads 0.20 at AUROC 1.0 — a property of the toy data, not a calibration bug, and a reminder that these numbers are plumbing evidence and nothing else.
 
-- **2026-08-23 (b)** — **AngioCAD verified and its adapter landed: the proxy path is classification, not detection.** Settled AngioCAD's format for **43 kB** instead of downloading 16.4 GB — pulled `AngioCAD_Labels.xlsx` from Zenodo `10.5281/zenodo.15826856` and read it. **It has NO bounding boxes**, contradicting secondary sources: it is one row per patient, 413 rows x 18 columns, carrying a 7-grade severity (`NL`/`1-25`/`26-50`/`51-75`/`76-90`/`91-99`/`100`) for each of 15 named segments plus the per-side video-series numbers. The 43 kB file size was itself the tell — per-frame boxes for 413 videos cannot fit. **Consequence: AngioCAD cannot train the YOLO detector**, so "more patients for the detector" and "reformulate as a study-level classifier" collapse into the SAME path; the label format forces it. That also makes the work dual-use, since a study-level classifier is the machinery Model One (AVF) needs anyway. NEW `src/data_prep/angiocad_to_cls.py` + 32 tests. **Its core job is a correctness constraint:** a video shows ONE coronary side, and **83 of 413 patients (20%) have disease on one side and a wholly normal other side**, so per-video labels are restricted to the segments that view actually shows (resolved from the sheet's own Right/Left Coronary Series columns; an unlisted series is refused, never guessed). Measured on the real sheet: **376 of 2,644 videos (14.2%) are negative despite their patient being diseased** — precisely what a naive patient-level label would have corrupted, the same class of error as A1a. Output is **2,644 videos / 413 patients** (~10x CADICA's 42), 63.8% positive at a 50% cut and 57.6% at 70%, `group_key` = patient so splits stay patient-grouped. Segment-level is the model target and patient-level is derived as `any(segment)`, so one model serves both granularities. **Still open: the significance threshold (50% vs 70%) is a CLINICAL choice for Dr. Reddy**, not ours — it belongs with the correction in `REDDY_CORRECTION_2026-08-23.md`.
+- **2026-08-23 (b)** — **AngioCAD verified and its adapter landed: the proxy path is classification, not detection.** Settled AngioCAD's format for **43 kB** instead of downloading 16.4 GB — pulled `AngioCAD_Labels.xlsx` from Zenodo `10.5281/zenodo.15826856` and read it. **It has NO bounding boxes**, contradicting secondary sources: it is one row per patient, 413 rows x 18 columns, carrying a 7-grade severity (`NL`/`1-25`/`26-50`/`51-75`/`76-90`/`91-99`/`100`) for each of 15 named segments plus the per-side video-series numbers. The 43 kB file size was itself the tell — per-frame boxes for 413 videos cannot fit. **Consequence: AngioCAD cannot train the YOLO detector**, so "more patients for the detector" and "reformulate as a study-level classifier" collapse into the SAME path; the label format forces it. That also makes the work dual-use, since a study-level classifier is the machinery Model One (AVF) needs anyway. NEW `src/data_prep/angiocad_to_cls.py` + 32 tests. **Its core job is a correctness constraint:** a video shows ONE coronary side, and **83 of 413 patients (20%) have disease on one side and a wholly normal other side**, so per-video labels are restricted to the segments that view actually shows (resolved from the sheet's own Right/Left Coronary Series columns; an unlisted series is refused, never guessed). Measured on the real sheet at the time: ~~376 of 2,644 videos (14.2%) are negative despite their patient being diseased~~ — this was the sheet-only prediction, before the real archive tree was resolved (2026-08-25) and before the `parse_series_spec` fix (2026-08-28); not recomputed against either — precisely what a naive patient-level label would have corrupted, the same class of error as A1a. Output was ~~2,644 videos / 413 patients~~ (~10x CADICA's 42), ~~63.8% positive at a 50% cut and 57.6% at 70%~~ — **superseded 2026-08-28: 2,734 videos / 413 patients, 64.0% @50% / 58.0% @70%**, see the 2026-08-28 changelog entry above — `group_key` = patient so splits stay patient-grouped. Segment-level is the model target and patient-level is derived as `any(segment)`, so one model serves both granularities. **Still open: the significance threshold (50% vs 70%) is a CLINICAL choice for Dr. Reddy**, not ours — it belongs with the correction in `REDDY_CORRECTION_2026-08-23.md`.
 
 - **2026-08-23** — **Negative-sampling sweep run; A1 closed; the stenosis gap is now shown NOT to be a data-balance problem.** Two GPU runs (`negatives_per_positive` 0.25 and 1.0) on top of the A1 fix, scored three-way against the pre-fix baseline on the corpus-independent per-video metric. **Background dose is a real, monotonic lever:** at matched sensitivity 0.882 the false-flag rate falls 0.902 → 0.850 → 0.745 across 0% / 10.5% / 31.9% background, and Youden J at conf 0.10 goes −0.052 → +0.033 → +0.212. The pre-fix model was **worse than chance** at every recall-first operating point; it no longer is. **But the sensitivity CEILING erodes with the dose** — max achievable per-video sensitivity 0.931 → 0.902 → 0.882 — so at 1.0 the model **cannot reach 0.90 sensitivity at any threshold** and fails the clinical floor before specificity is even discussed. `negatives_per_positive` therefore ships at **0.25**, the only swept value that both improves discrimination and keeps the ceiling at the floor (and also the per-frame optimum: F1 0.288 vs 0.252). **Do not raise to 2.0.** At the sensitivity the gate requires, specificity is **0.105** vs the ~0.95 needed; PPV at 20% prevalence is 0.228 against a 0.200 base rate — worth ~3 points over guessing. **Conclusion: A1 was necessary, is now closed, and is not sufficient.** What remains is detector capability and patient diversity, not corpus composition — AngioCAD (413 patients, ~10× CADICA), angiography pretraining (now safe, A2/A2b closed the defects that would have poisoned pseudo-labelling), or reformulating as a study-level classifier. Full write-up: [`stenosis_neg1.0_yolo11s_768_e80/RESULTS.md`](../experiments/stenosis_neg1.0_yolo11s_768_e80/RESULTS.md). **`STENOSIS_GATE_PROPOSAL.md` corrected** — the 0.902 quoted to Dr. Reddy was measured without specificity and needs correcting with him.
 

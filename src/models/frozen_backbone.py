@@ -2,10 +2,11 @@
 
 The backbone is a feature extractor and NOTHING trains inside it -- sample efficiency on a small
 institutional cohort is the fixed requirement, and a frozen backbone is how the design meets it.
-Real backbones (dinov2_vitb14 default; dinov3/rad-dino/biomedclip bake-off candidates per
-configs/avf_fistulography.yaml) come from timm, imported lazily so this module -- and every test --
-works with timm absent. 'test-tiny' is a seeded, deterministic conv backbone for offline tests:
-NEVER use it for a real run.
+Real backbones (vit_base_patch14_dinov2.lvd142m default -- the timm name, NOT torch.hub's
+dinov2_vitb14, which timm.create_model() rejects with RuntimeError: Unknown model; dinov3/rad-dino/
+biomedclip bake-off candidates per configs/avf_fistulography.yaml) come from timm, imported lazily
+so this module -- and every test -- works with timm absent. 'test-tiny' is a seeded, deterministic
+conv backbone for offline tests: NEVER use it for a real run.
 """
 import torch
 import torch.nn as nn

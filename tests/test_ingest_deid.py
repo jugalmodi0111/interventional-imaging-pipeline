@@ -320,6 +320,48 @@ def test_remove_and_keep_tags_do_not_overlap():
     assert "PatientID" not in REMOVE_TAGS and "PatientID" not in KEEP_TAGS
 
 
+def test_series_description_is_scrubbed_not_kept():
+    """Free text typed at the console leaks names exactly the way StudyDescription does.
+
+    The PHI audit that gates the human --ack-phi-audit sign-off lists SeriesDescription among
+    the identifiers it promises are scrubbed. Resolved in favour of the stronger claim: the
+    tag is emptied, so the promise the reviewer signs off on is true.
+    """
+    assert "SeriesDescription" in REMOVE_TAGS
+    assert "SeriesDescription" not in KEEP_TAGS
+
+
+def test_residual_phi_flags_a_series_description(tmp_path):
+    """In REMOVE_TAGS means the pre-write residual gate quarantines it if it ever survives."""
+    ds = make_xa_dataset("INU-00417", SeriesDescription="AVF RUN 3 REDDY")
+
+    assert "SeriesDescription" in residual_phi(ds)
+
+
+def test_series_description_is_emptied_by_the_scrub(tmp_path):
+    ds = _read_back(make_xa_dataset("INU-00417", SeriesDescription="AVF RUN 3 REDDY^SURESH"),
+                    tmp_path)
+
+    clean, _ = deid_dataset(ds, SALT_A, site="inu")
+
+    assert str(clean.SeriesDescription) == ""
+    assert residual_phi(clean) == []
+
+
+def test_series_description_text_is_gone_from_the_file_on_disk(tmp_path):
+    """The byte-level check: nothing typed into the series label reaches the clean drive."""
+    import pydicom
+
+    ds = _read_back(make_xa_dataset("INU-00417", SeriesDescription="AVF RUN 3 REDDY"), tmp_path)
+
+    clean, _ = deid_dataset(ds, SALT_A, site="inu")
+    out = tmp_path / "clean.dcm"
+    clean.save_as(str(out), enforce_file_format=True)
+
+    assert b"REDDY" not in out.read_bytes()
+    assert str(pydicom.dcmread(str(out)).SeriesDescription) == ""
+
+
 def test_residual_phi_flags_an_untouched_dataset():
     ds = make_xa_dataset("INU-00417")
 

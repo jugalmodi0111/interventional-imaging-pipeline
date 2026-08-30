@@ -285,24 +285,38 @@ Labelling is stricter than specified: a video the manifests list in *neither* fi
 Module-level imports remain stdlib-only (`argparse, glob, os, re, yaml`); no cv2/torch/numpy.
 `negatives_per_positive: 0` reproduces the pre-fix behaviour exactly.
 
-## Open judgement call: the shipped ratio is above guidance
+## Resolved: the shipped ratio was swept, and it is 0.25, not 1.0
 
-`negatives_per_positive: 1.0` on the real corpus:
+*(This section originally posed an "open judgement call" against a shipped `negatives_per_positive:
+1.0`. That has since been swept and settled — see below. The old text is struck, not deleted, per
+this repo's correction convention: numbers are corrected visibly, not silently overwritten.)*
+
+~~`negatives_per_positive: 1.0` on the real corpus:~~
 
 | ratio | negatives | corpus | background frac |
 |---|---|---|---|
 | 0.00 | 0 | 3409 | 0.0% |
 | **0.25** | 397 | 3806 | **10.4%** |
 | 0.50 | 794 | 4203 | 18.9% |
-| **1.00** | 1589 | 4998 | **31.8%** |
+| ~~1.00~~ | 1589 | 4998 | ~~31.8%~~ |
 
-Ultralytics guidance is 0–10%; the shipped default is **~3× that ceiling**. Defensible given a
+~~Ultralytics guidance is 0–10%; the shipped default is **~3× that ceiling**.~~ ~~Defensible given a
 false-flag rate of ~1.0, but recall is the clinically costly axis and the model already misses ~75%
-of lesions, so over-dosing background is a real risk in the dangerous direction.
+of lesions, so over-dosing background is a real risk in the dangerous direction.~~
 
-**This should be swept, not assumed.** Train at 0.25 and at 1.0, then score both in a single
-per-video pass (the P1.1b/c cell already scores multiple weight sets) and compare operating tables.
-Do not pick by per-frame F1.
+**Swept 2026-08-23** (`experiments/stenosis_neg1.0_yolo11s_768_e80/RESULTS.md`, and
+`PROJECT_TRACKER.md`'s 2026-08-23 changelog entry): both 0.25 and 1.0 were trained and scored
+three-way against the pre-fix baseline on the per-video metric. Background dose is a real,
+monotonic discrimination lever, but the **sensitivity ceiling erodes with the dose** — max
+achievable per-video sensitivity 0.931 → 0.902 → 0.882 across 0% / 10.5% / 31.9% background — so at
+1.0 the model cannot reach 0.90 sensitivity at any threshold and fails the clinical floor before
+specificity is even discussed. **`negatives_per_positive` ships at 0.25** — inside the Ultralytics
+0–10% guidance band read against the *positive* count in the pre-sampling corpus, the only swept
+value that both improves discrimination and keeps the sensitivity ceiling at the clinical floor, and
+also the per-frame optimum (F1 0.288 vs 0.252 at 1.0). **Do not raise to 1.0** — verified in
+`configs/stenosis_yolo.yaml` and `src/data_prep/cadica_to_yolo.py`, both default to 0.25 as of this
+writing (re-verify against those two files directly before quoting this number again, since it has
+drifted before).
 
 
 ---

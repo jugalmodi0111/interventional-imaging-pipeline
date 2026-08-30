@@ -1,7 +1,9 @@
 # Intended Use & Regulatory Posture
 
-**Purpose:** this is the repo's Stage 5 gate — [`PROJECT_TRACKER.md`](PROJECT_TRACKER.md) §3.5 names it
-*"Regulatory / intended-use gate … before any non-research use"* — and it doubles as the Dialygo B1/B8
+**Purpose:** this is the repo's Stage 5 gate — [`PROJECT_TRACKER.md`](PROJECT_TRACKER.md) §1 (workstream L)
+names it *"Regulatory (Stage 5) … before any non-research use"* (~~cited here as §3.5~~ — that
+section number is from the tracker's pre-2026-08-15 stage-numbered layout, preserved as historical
+Part II; the current workstream-based tracker has no §3.5) — and it doubles as the Dialygo B1/B8
 SaMD intended-use statement required by the clinical partner
 ([`Dialygo_Orientation_and_Requirements.md`](Dialygo_Orientation_and_Requirements.md)). It is a
 **blocking gate**: it must exist and be agreed by the clinical lead before any model in this repository
@@ -14,7 +16,8 @@ provisional and every model in this repo as research-only (§7).
 **Source documents this is grounded in** — do not extend claims beyond what they say:
 [`Dialygo_Orientation_and_Requirements.md`](Dialygo_Orientation_and_Requirements.md) §B1, B3, B6, B7, B8 ·
 [`superpowers/plans/2026-08-01-dialygo-realignment.md`](superpowers/plans/2026-08-01-dialygo-realignment.md) ·
-[`PROJECT_TRACKER.md`](PROJECT_TRACKER.md) §3.5, §3.2 ·
+[`PROJECT_TRACKER.md`](PROJECT_TRACKER.md) §1 (workstream L, regulatory) and §8 (item 2, clinical sign-off)
+(~~previously cited as §3.5, §3.2~~ — those pointed into the tracker's superseded Part II) ·
 [`Model_Pipeline_Playbook.md`](Model_Pipeline_Playbook.md) §0, §3.1, §5 ·
 [`../src/serve/stenosis_triage.py`](../src/serve/stenosis_triage.py) ·
 [`../src/serve/validity.py`](../src/serve/validity.py).
@@ -71,7 +74,7 @@ functions:
 | Top confidence lands in the defer band | `reason="low-confidence"`, `deferred=True` | "Uncertain — refer for specialist review" | Any copy implying a resolved answer |
 | A sub-threshold detection sits near the band | `reason="no-detection-uncertain"`, `deferred=True` | "Possible finding — clinician review required" (never reported as clean) | "No finding" |
 | Input is out-of-distribution / unfamiliar | `reason="ood"`, `deferred=True` | "Input unfamiliar to the model — refer for review" | Any confidence number presented as trustworthy |
-| Input fails the modality/view validity gate | `router.decide_modality` → `modality="unknown"` | "Not a valid vascular-access image for this tool" | Attempting to read it anyway |
+| Input fails the modality/view validity gate | `ValidityGate.classify` (~~was `router.decide_modality`~~ — the modality router was replaced by the B3 validity gate `src/serve/validity.py` on 2026-08-16, then deleted 2026-08-16) → `modality="unknown"` | "Not a valid vascular-access image for this tool" | Attempting to read it anyway |
 
 The rule that generalizes across all rows: **the word "diagnosis" never appears in system output.**
 Output is always a suggestion to weigh (§5), and a calibrated confidence is shown, never a bare
@@ -160,9 +163,9 @@ writing:
 | Model | Status | Evidence |
 |---|---|---|
 | AVF fistulography classifier (Model One) | Not yet trained — blocked on Track 0 (legal/data gates, §10) | `superpowers/plans/2026-08-01-dialygo-realignment.md` §5 Track 0, Track 3 |
-| Coronary stenosis detector | **Below its accuracy floor**: F1 0.291 / recall 0.271 against a 0.57 floor | `PROJECT_TRACKER.md` §1, §3.2 |
-| Coronary vessel segmentation | Clears its own (provisional) floor (Dice 0.915 / clDice 0.956 ≥ 0.75) | `PROJECT_TRACKER.md` §1, §3.1 |
-| Catheter/guidewire tracking | Trained; device-level gates (IoU/fps/ID-switch) unverified | `PROJECT_TRACKER.md` §3.3 |
+| Coronary stenosis detector | **Below its accuracy floor**: F1 0.291 / recall 0.271 against a 0.57 floor | `PROJECT_TRACKER.md` §1 (workstream F), §4.5 (~~previously cited as §3.2, PHI containment — wrong section~~) |
+| Coronary vessel segmentation | Clears its own (provisional) floor (Dice 0.915 / clDice 0.956 ≥ 0.75) | `PROJECT_TRACKER.md` §1 (workstream E), §4.4 (~~previously cited as §3.1, the B5/B9 legal gate — wrong section~~) |
+| Catheter/guidewire tracking | Trained; device-level gates (IoU/fps/ID-switch) unverified | `PROJECT_TRACKER.md` §1 (workstream G), §4.6 (~~previously cited bare as §3.3, the audit ledger — wrong section~~) |
 
 Clearing a floor is **not** the same as clinical clearance — even the coronary segmentation model,
 which passes its stated floor, has no intended-use claim of its own and is a research/transfer-learning
@@ -207,9 +210,11 @@ real clinical decision (`Dialygo_Orientation_and_Requirements.md` §B6):
    dataset itself once real data is available, not assumed from the coronary/stenosis work.
 2. **External validation at a site other than the source institute** — required as a first-class
    deliverable before any performance claim or deployment, not an optional nice-to-have. The harness
-   for this (`src/eval/cross_vendor.py`) exists as a leave-one-vendor-out shell and is promoted, per
-   the realignment plan, to the leave-one-*site*-out mechanism for this requirement — it is not yet
-   wired up or run (`PROJECT_TRACKER.md` §3.3b: *"blocked … eval harness is a TODO shell"*).
+   for this (`src/eval/cross_vendor.py`, 41 LOC) exists as a leave-one-vendor-out shell and is
+   promoted, per the realignment plan, to the leave-one-*site*-out mechanism for this requirement —
+   it is not yet wired up or run (`PROJECT_TRACKER.md` §2.4, "Stubs and TODO shells": *"TODO shell.
+   Blocks Stage 3b"*; ~~previously cited as §3.3b, a section that does not exist in the current
+   tracker~~).
 3. **Report where the model fails, not only where it succeeds** — any validation report accompanying
    a non-research-use request must include failure analysis (false negatives especially, given the
    recall-first posture in §5), not only aggregate accuracy figures.

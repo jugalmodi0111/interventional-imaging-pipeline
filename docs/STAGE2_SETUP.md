@@ -93,7 +93,7 @@ Also relevant: `model: {name: yolo11s, imgsz: 768}` (the 's'+768 combo needed to
 
 1. **More patients** (CADICA now, others next) — patient count is the bottleneck; `cadica_to_yolo.py` adds 42 patient-diverse patients with a patient-grouped split. Patients > frames. *(Highest ROI.)*
 2. **Recall-first gate + low-conf eval** — `qualifies_det` (optional `target.recall`) + `val_kwargs` (`val.conf: 0.001`) in `src/train/train_detector.py` stop a missed lesion from passing as "good enough."
-3. **Temporal voting at inference** — `src/serve/temporal_vote.py` `aggregate_sequence` links per-frame detections into tracks over a cine window: `min_hits` persistence drops one-frame flicker (precision) and gap-interpolation recovers missed frames (recall).
+3. **Temporal voting, offline only** — `src/eval/temporal_vote.py` `aggregate_sequence` (~~was `src/serve/temporal_vote.py`~~ — deleted from `src/serve/` with the rest of the video path on 2026-08-13, restored 2026-08-16 under `src/eval/` for offline cine scoring only; Model One serves a single still frame and nothing in the live request path aggregates over a clip) links per-frame detections into tracks over a cine window: `min_hits` persistence drops one-frame flicker (precision) and gap-interpolation recovers missed frames (recall).
 4. **Triage / abstention for safe shipping** — `src/serve/stenosis_triage.py` `triage_decision` runs the sub-floor model as high-recall screening that **defers** OOD / low-confidence / possible-miss cases to a human instead of being confidently wrong.
 5. **SSL backbone** — `model.pretrained_weights` + `_load_pretrained_backbone` (self-supervised pretrain on unlabeled XCA), plus `ssl.seed: gdino` / `ssl.pseudo_label` self-training. *(Lowest ROI until the backbone exists.)*
 

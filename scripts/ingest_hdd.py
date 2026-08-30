@@ -61,6 +61,25 @@ def log(msg):
     print(msg, flush=True)
 
 
+def append_jsonl_0600(path, row):
+    """append_jsonl, but the file is owner-only — for anything that re-identifies the cohort.
+
+    `manifest.append_jsonl` opens with plain `open(..., "a")`, so the file lands at whatever the
+    umask allows (0644 on a typical mount). That is right for an inventory and wrong for the
+    crosswalk journal, which is a real-ID -> pseudonym mapping in plaintext and therefore needs
+    the same 0600 that `deid.write_crosswalk` gives the CSV it feeds.
+
+    The mode argument to os.open only applies when the file is created, so the explicit chmod is
+    what repairs a file an earlier, unhardened run already left world-readable.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, sort_keys=True) + "\n")
+    os.chmod(str(path), 0o600)
+
+
 # --------------------------------------------------------------------------- gate
 
 def check_paths(args, src, work, clean):
@@ -114,6 +133,34 @@ def _present(rows, key):
     return sum(1 for r in rows if str(r.get(key) or "").strip())
 
 
+#: Keywords whose density the audit reports. Their DISPOSITION is never written here -- it is
+#: derived from deid's own lists by _disposition(), so the sentence the human signs off on cannot
+#: drift away from what phase 4 actually does. The header used to assert every one of these was
+#: "ALL scrubbed in phase 4"; SeriesDescription was in KEEP_TAGS and PatientID is pseudonymised
+#: rather than emptied, so the gate was being told something false in two places.
+AUDITED_KEYWORDS = (
+    "PatientID", "PatientName", "PatientBirthDate", "OtherPatientIDs",
+    "AccessionNumber", "ReferringPhysicianName", "PerformingPhysicianName",
+    "InstitutionName", "InstitutionAddress", "StudyDescription", "SeriesDescription",
+)
+
+
+def _disposition(keyword):
+    """What phase 4 will do to `keyword`, read out of deid at report time.
+
+    Anything not named by deid's scrub lists is reported as KEPT in capitals: an identifier the
+    pipeline is about to carry through to the clean drive is exactly what the reviewer is being
+    asked to notice, so it must never be able to hide inside a blanket reassurance.
+    """
+    if keyword == "PatientID":
+        return "pseudonymised (HMAC, phase 4)"
+    if keyword in deid.REMOVE_TAGS:
+        return "emptied (phase 4)"
+    if keyword in deid.DATE_TAGS:
+        return "date-shifted (phase 4)"
+    return "**KEPT — survives the scrub, reaches the clean drive**"
+
+
 def write_phi_audit(work, err_counts):
     rows = read_jsonl(work / "dicom_index.jsonl")
     lines = ["# PHI audit — read this before de-identification runs", ""]
@@ -135,13 +182,16 @@ def write_phi_audit(work, err_counts):
         f"- unparseable/dropped DICOM files: **{err_counts['n_unparsed']}** "
         f"(see index_errors.jsonl) · SOP duplicates collapsed: {err_counts['n_sop_duplicates']}",
         "",
-        "## Identifier density (rows carrying a non-empty value — ALL scrubbed in phase 4)",
+        "## Identifier density (rows carrying a non-empty value, and what phase 4 does to it)",
+        "",
+        "Dispositions below are read from `src/ingest/deid.py` at report time, not written by "
+        "hand: `emptied` = the keyword is in REMOVE_TAGS, `date-shifted` = DATE_TAGS, "
+        "`pseudonymised` = replaced by the HMAC pseudonym. Anything marked **KEPT** survives "
+        "the scrub and reaches the clean drive — read those rows carefully before acknowledging.",
         "",
     ]
-    for key in ("PatientID", "PatientName", "PatientBirthDate", "OtherPatientIDs",
-                "AccessionNumber", "ReferringPhysicianName", "PerformingPhysicianName",
-                "InstitutionName", "InstitutionAddress", "StudyDescription", "SeriesDescription"):
-        lines.append(f"| {key} | {_present(rows, key)}/{n} |")
+    for key in AUDITED_KEYWORDS:
+        lines.append(f"| {key} | {_present(rows, key)}/{n} | {_disposition(key)} |")
     lines += ["", "## Burned-in annotation flags (drives phase-5 pixel screening)", ""]
     for val, c in Counter(str(r.get("BurnedInAnnotation")) for r in rows).most_common():
         lines.append(f"| BurnedInAnnotation={val} | {c} |")
@@ -164,24 +214,54 @@ def write_phi_audit(work, err_counts):
 # --------------------------------------------------------------------------- phase 4: deid
 
 def run_deid(work, clean, site, salt, limit):
+    """Phase 4. Two containment invariants hold over everything this writes.
+
+    **The crosswalk exists in one protected place.** `crosswalk_rows.jsonl` is a real-ID ->
+    pseudonym mapping in plaintext, i.e. the crosswalk, so it is created 0600 exactly like
+    `_keys/crosswalk.csv` and is *deleted* once its rows have been folded into that CSV. It is a
+    per-instance durability journal for one run, not a permanent second copy: resume reloads the
+    accumulated mapping from the 0600 CSV (`deid.read_crosswalk`), and any rows a killed run left
+    behind are merged on the next run before the journal is removed. Nothing is lost either way,
+    and in the steady state exactly one file on the drive re-identifies the cohort.
+
+    **`deid_done.jsonl` pairs a pseudonym with nothing real.** It is the only artifact that
+    carries a pseudonym next to anything else, so every value beside it is the post-scrub one:
+    the shifted StudyDate and the blanked StudyTime read off the scrubbed `ds`, and the remapped
+    study/series/SOP UIDs. The source path and the source UIDs are deliberately absent -- a path
+    like `.../REDDY_SURESH/IM001.dcm` is plaintext PHI, and a source UID is a direct PACS lookup
+    key, so either one would re-identify a pseudonym without the salt or the crosswalk. The
+    source-to-output join is still fully recoverable by anyone holding the salt, by re-deriving
+    `remap_uid(salt, SOPInstanceUID)` from `dicom_index.jsonl` -- which is the point: the join
+    requires the key.
+    """
     rows = read_jsonl(work / "dicom_index.jsonl")
     done_path = work / "deid_done.jsonl"
     done = {r["sop"] for r in read_jsonl(done_path)}
     err_path = work / "deid_errors.jsonl"
     quarantine_path = work / "deid_quarantine.jsonl"
+    xwalk_path = clean / "_keys" / "crosswalk.csv"
     xwalk_rows_path = work / "crosswalk_rows.jsonl"
 
     import pydicom
 
     n_new = n_err = n_quar = 0
     for row in rows:
-        sop = row["SOPInstanceUID"]
-        if sop in done:
+        sop = str(row.get("SOPInstanceUID") or "")
+        real_pid = str(row.get("PatientID") or "UNKNOWN")
+        try:
+            # Resume key is the remapped SOP UID, so the done log stays free of source UIDs.
+            # Derived here rather than after the read: an unusable UID is a row-level error.
+            done_key = deid.remap_uid(salt, sop)
+        except ValueError as e:
+            append_jsonl(err_path, {"path": row.get("path"), "sop": sop,
+                                    "error": f"{type(e).__name__}: {e}"})
+            n_err += 1
+            continue
+        if done_key in done:
             continue
         if limit is not None and n_new >= limit:
             log(f"  --limit {limit} reached; stopping deid early (resumable).")
             break
-        real_pid = str(row.get("PatientID") or "UNKNOWN")
         try:
             ds = pydicom.dcmread(row["path"], force=True)
             ds, ids = deid.deid_dataset(ds, salt, site=site)
@@ -198,13 +278,14 @@ def run_deid(work, clean, site, salt, limit):
             tmp = dst.with_suffix(".dcm.part")
             ds.save_as(str(tmp), enforce_file_format=True)
             os.replace(tmp, dst)
-            append_jsonl(xwalk_rows_path, {"real": real_pid, "pseudo": pp})
+            append_jsonl_0600(xwalk_rows_path, {"real": real_pid, "pseudo": pp})
             append_jsonl(done_path, {
-                "sop": sop, "src": row["path"], "dst": str(dst), "pseudo_patient": pp,
-                "study_real": str(row.get("StudyInstanceUID") or ""),
-                "series_real": str(row.get("SeriesInstanceUID") or ""),
-                "study_date": str(row.get("StudyDate") or ""),
-                "study_time": str(row.get("StudyTime") or ""),
+                "sop": ids["pseudo_sop"], "dst": str(dst), "pseudo_patient": pp,
+                "pseudo_study": ids["pseudo_study"],
+                "pseudo_series": ids["pseudo_series"],
+                # post-scrub values off `ds`: the per-patient shifted date and the emptied time.
+                "study_date": str(getattr(ds, "StudyDate", "") or ""),
+                "study_time": str(getattr(ds, "StudyTime", "") or ""),
             })
             n_new += 1
         except Exception as e:  # noqa: BLE001 — one bad burn must not kill the batch
@@ -212,12 +293,15 @@ def run_deid(work, clean, site, salt, limit):
                                     "error": f"{type(e).__name__}: {e}"})
             n_err += 1
 
-    # Crosswalk: rebuilt from the full accumulated row log on every run (rewritable by design).
-    mapping = {}
+    # Crosswalk: the 0600 CSV is the accumulated store, so seed from it, fold in this run's
+    # journal (plus anything a previously killed run left there), rewrite, then drop the journal.
+    mapping = deid.read_crosswalk(xwalk_path)
     for r in read_jsonl(xwalk_rows_path):
         mapping[r["real"]] = r["pseudo"]
     if mapping:
-        deid.write_crosswalk(clean / "_keys" / "crosswalk.csv", mapping)
+        deid.write_crosswalk(xwalk_path, mapping)
+        # Only after the protected copy is on disk — never widen the window with no crosswalk.
+        xwalk_rows_path.unlink(missing_ok=True)
     return {"n_deid_new": n_new, "n_deid_total": len(read_jsonl(done_path)),
             "n_deid_errors": n_err, "n_quarantined": n_quar, "n_crosswalk": len(mapping)}
 
@@ -243,6 +327,19 @@ def _screen_boxes(ds):
     return boxes
 
 
+def allocator_sort_key(r):
+    """Stable per-instance order for the T17 stem allocator, over pseudonymous fields only.
+
+    `study_date` is the shifted date and `study_time` is now always empty, but neither costs the
+    allocator anything: the shift is a constant per patient and the allocator enumerates within a
+    patient, so shifted dates sort exactly as the real ones did, and the remapped study/series
+    UIDs plus the remapped SOP UID are a deterministic total order underneath. What the allocator
+    needs is stability across runs, not wall-clock chronology.
+    """
+    return (r.get("study_date", ""), r.get("study_time", ""), r.get("pseudo_study", ""),
+            r.get("pseudo_series", ""), r["sop"])
+
+
 def run_extract(work, clean, site, limit):
     rows = read_jsonl(work / "deid_done.jsonl")
     done_path = work / "extract_done.jsonl"
@@ -257,8 +354,7 @@ def run_extract(work, clean, site, limit):
         by_patient[r["pseudo_patient"]].append(r)
     alloc = {}
     for pp, rs in by_patient.items():
-        rs.sort(key=lambda r: (r["study_date"], r["study_time"], r["study_real"],
-                               r["series_real"], r["sop"]))
+        rs.sort(key=allocator_sort_key)
         for i, r in enumerate(rs, start=1):
             alloc[r["sop"]] = i
 

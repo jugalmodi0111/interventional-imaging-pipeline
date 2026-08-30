@@ -1,82 +1,136 @@
-# Interventional Imaging Pipeline (edge / laptop)
+# Interventional Imaging Pipeline — Dialygo / Model One
 
-**Teacher → distill → quantize → deploy** deep-learning pipeline for interventional imaging:
-coronary vessel segmentation, stenosis detection, catheter/guidewire tracking, cerebral DSA,
-AV-fistula, and TAVR. Every production model is exportable to run **on-device** (Apple-silicon
-laptop / procedure-cart mini-PC); heavy models appear only as GPU **teachers** or **offline** steps.
+**Primary deliverable: Model One**, an AI decision-support classifier that screens a single
+de-identified angiographic still frame for possible juxta-anastomotic stenosis in a haemodialysis
+arteriovenous fistula (AVF), built for the **Dialygo** engagement with the Institute of
+Nephro-Urology (clinical lead: Dr. G. Gireesh Reddy). The earlier coronary angiography work
+(vessel segmentation, stenosis detection, catheter/guidewire tracking) is a **parallel
+research/transfer-learning track** that funds the technique and donates code paths to Model One —
+it is not the product itself. See [`docs/Dialygo_Orientation_and_Requirements.md`](docs/Dialygo_Orientation_and_Requirements.md)
+(the binding B1–B9 requirements) for the full posture.
 
-**Build side = Colab/Kaggle GPU. Inference side = the Mac (CoreML).** Training/testing on a laptop
-CPU is far too slow, so all heavy lifting lives in importable `src/*` modules that thin GPU
-notebooks call; the portable artifact (student `state_dict` / YOLO `best.pt`) is converted to CoreML
-on the Mac.
+**Deployment posture: hosted / central serving** (Dialygo B8) — the tool serves predictions over a
+network API and model weights are not distributed to the point of care. This *replaces* the
+project's earlier on-device/edge posture for Model One. That earlier posture (CoreML export,
+INT8 quantization, procedure-cart deployment) is retained only as **research-track** guidance for
+the coronary segmentation/stenosis work and does not govern Model One.
 
-## What makes it clinical-grade, not just accurate
-- **Accuracy floor gate** — a fast, tiny model can't win on speed while sitting below a per-problem
-  clinical accuracy floor (see `Model_Selection_Matrix.xlsx`).
-- **clDice re-checked after quantization** — INT8/palettization breaks thin vessels even when Dice holds.
-- **Calibration + abstention** — ECE ≤ 0.05, defer-to-human path; "wrong but confident" is the danger.
-- **Cross-vendor validation** — leave-one-vendor-out across Siemens/GE/Philips.
-- **Audit trail** — every inference logs input-hash + model version + prediction.
+**Not a medical device.** No model in this repository is cleared for clinical use — see
+[`docs/INTENDED_USE.md`](docs/INTENDED_USE.md), which is drafted but not yet signed off by a
+clinical stakeholder. Every prediction in this repo today is a research output.
 
-## Problems, picks & data (v1 core in bold)
-| Problem | Edge model | Datasets |
-|---|---|---|
-| **Coronary seg** | nnU-Net teacher → **TinyU-Net** student → CoreML | **ARCADE** t1, **DCA1**, **XCAD** (SSL) |
-| **Stenosis** | **YOLO11n** (+ pseudo-label SSL) | **ARCADE** t2, **Danilov** |
-| **Catheter/guidewire** | **YOLO11n** + ByteTrack | **CathAction** |
-| Cerebral DSA | keyframe 2D + ConvLSTM (DSANet teacher, offline) | DIAS, DSCA |
-| AVF audio / tabular | small ViT / LightGBM | institutional (IRB) |
-| TAVR CT / fluoro / risk | 3D nnU-Net (offline) / YOLO / XGBoost | MM-WHS, Seg.A proxies |
+---
 
-See [`docs/DATASETS.md`](docs/DATASETS.md) for download links + how each dataset is used.
+## Status today
+
+*(spot-checked against the working tree; see [`docs/PROJECT_TRACKER.md`](docs/PROJECT_TRACKER.md)
+for the maintained, line-by-line version of this list — numbers below can drift as work lands)*
+
+- **Model One (AVF classifier):** code-complete scaffold — the train → serve path is proven
+  end-to-end, but **on synthetic frames only**. No model has been trained on a real image: the
+  institutional data-use and IP agreements (B5/B9) are unexecuted, so no AVF frames exist on disk,
+  and the registry entry ships `floor_ok: false` — every finding defers by construction until a
+  clinician signs a sensitivity/specificity floor.
+- **Coronary vessel segmentation** (research track): accuracy-floor gate **passed** — Dice 0.915 /
+  clDice 0.956 against a 0.75 floor; the CoreML and static-INT8 edge exports also pass their
+  clDice-drop gate.
+- **Coronary stenosis detection** (research track): **below its per-frame accuracy floor** — F1
+  0.291 vs a 0.57 floor. A reframe to per-video sensitivity/specificity (rather than per-frame F1)
+  is proposed and evidence-backed but not yet signed off by the clinical lead.
+- **Catheter/guidewire tracking** (research track): trained, but its device-level gates (IoU / fps
+  / ID-switch) were never measured, and the tracking code itself (ByteTrack) was deleted along with
+  the rest of the realtime/video serving path on 2026-08-13.
+- **AngioCAD proxy corpus** (a coronary-angiography dataset used to validate the classifier code
+  path and run a backbone bake-off — **not** AVF data, and never used for a clinical claim): a
+  patient-level severity-sheet adapter (`src/data_prep/angiocad_to_cls.py`) resolves it to videos
+  with per-video positive labels; re-verify the current video/patient/positive-rate counts against
+  `docs/PROJECT_TRACKER.md` §2.5/§10 before quoting them, since a `parse_series_spec` parsing bug
+  affecting the corpus size was found and fixed on 2026-08-28.
+- **Test suite:** verify with `python -m pytest tests/ -q` — several agents are landing work
+  concurrently, so any number printed here would already be stale.
+- **AVF real-world data:** a worldwide survey (2026-08-13) found **no public AVF fistulography
+  dataset exists anywhere.** The institutional HDD is the only path to real training data, and it
+  is blocked on B5/B9 sign-off (legal/institutional, not an engineering task).
+
+## What actually ships today
+
+- **`src/serve/`** — a hosted decision-support API (`/health`, `/infer`, `/analyze`) that accepts
+  **one still frame per request**. There is **no realtime overlay, no video ingestion, and no
+  on-device object tracking** in the serve path today: `track.py` (ByteTrack), `realtime.py`,
+  `predict_image.py`, `stenosis_infer.py`, and the original `temporal_vote.py` were all deleted
+  from `src/serve/` on 2026-08-13 together with the rest of the video path (Model One is
+  single-still-frame by design). `temporal_vote.py` was later restored, but under **`src/eval/`**,
+  for *offline* cine scoring only (e.g. scoring a detector over a research-track video) — it is not
+  reachable from any live request.
+- A **B3 validity gate** (`src/serve/validity.py`) screens acquisition plausibility — corrupt,
+  blank/blown-out, wrong-shape, or colour input — before any model runs. It does **not** yet
+  discriminate imaging modality (e.g. "is this actually an AVF angiogram"); that needs a learned
+  OOD head trained on real in-distribution data, which does not exist yet.
+- **`src/ingest/`** — the institutional DICOM de-identification and frame-extraction pipeline for
+  the Dialygo HDD. Code-complete and verified end-to-end on synthetic DICOM only; the real run
+  against the institutional drive is blocked on B5/B9.
+- **`src/data_prep/`, `src/train/`, `src/eval/`, `src/export/`, `src/models/`** — dataset adapters,
+  training entrypoints, metrics/calibration, and CoreML/ONNX export used by both the Model One
+  classifier path and the coronary research track (segmentation, stenosis detection, catheter
+  tracking).
 
 ## Layout
+
 ```
-configs/       per-problem YAML (edge-tuned defaults)
+configs/       per-problem YAML (accuracy floors, dataset roots, orchestrator registry)
 data/          download + access instructions (no data committed)
-notebooks/     THIN GPU orchestrators (Colab/Kaggle) — import src, call it
+notebooks/     thin GPU orchestrators (Colab/Kaggle) — import src, call it; see notebooks/README.md
 src/env.py     Colab/Kaggle/local detection + paths
-src/data_prep  standardize datasets -> COCO / nnU-Net / YOLO + CLAHE
-src/models     TinyU-Net student, distillation, SAM/LoRA adapter
-src/train      training entrypoints (seg distill, YOLO detector, audio)
-src/eval       Dice/clDice/HD95, calibration, cross-vendor, edge benchmark, audit
-src/export     ONNX / INT8 / CoreML (palettize) + clDice gate
-src/serve      on-device CoreML inference, real-time overlay, ByteTrack, FastAPI
-pipelines/     stage-by-stage runbooks
-docs/          playbook, dataset validation, hosting questionnaire, Colab↔Mac split
+src/ingest     Dialygo institutional DICOM de-identification + frame extraction
+src/data_prep  dataset adapters -> COCO / nnU-Net / YOLO / classifier examples + CLAHE
+src/models     TinyU-Net student, distillation, frozen-backbone classifier head
+src/train      training entrypoints (coronary seg, stenosis detector, AVF classifier, audio stub)
+src/eval       Dice/clDice/HD95, calibration, classifier metrics, offline temporal voting, audit
+src/export     ONNX / INT8 / CoreML export + clDice gate (research-track edge path)
+src/serve      hosted single-frame decision API: validity gate -> orchestrator -> typed finding
+pipelines/     stage-by-stage runbooks (some predate the Dialygo pivot — cross-check against
+               docs/PROJECT_TRACKER.md before following one verbatim)
+docs/          tracker, playbook, dataset docs, intended-use/regulatory posture
 ```
 
 ## Quick start
+
 ```bash
 conda env create -f environment.yml && conda activate intv-img   # or: pip install -r requirements.txt
 
-# smoke-test (runs today, CPU)
-python -m src.eval.metrics
-python -m src.eval.edge_benchmark --model <model>.onnx
+# run the test suite
+pytest tests/ -q
 
-# coronary: build on Colab GPU (notebooks/colab_coronary_build.ipynb), then on the Mac:
+# serve the hosted decision API locally (single still frame per request)
+MODEL=outputs/coronary_student_clgeodice/student.mlpackage TASK=seg \
+  uvicorn src.serve.app:app --host 127.0.0.1 --port 8000
+
+# research-track coronary build on GPU (notebooks/colab_coronary_build.ipynb or
+# notebooks/kaggle_coronary_build.ipynb), then on the Mac:
 make export-coreml   MODEL=runs/coronary/student.pt
 make validate-coreml CORE=runs/coronary/student.mlpackage WEIGHTS=runs/coronary/student.pt \
                      IMAGES=data/processed/coronary/val/img MASKS=data/processed/coronary/val/msk
-make bench-coreml    MODEL=runs/coronary/student.mlpackage
 ```
 
-## Stages (see `pipelines/`)
-0 setup/prep · 1 coronary seg · 2 stenosis · 2.5 calibration · 3 temporal+catheter ·
-3b cross-vendor · 4 domain (AVF/TAVR). Each perception stage has two gates: accuracy floor
-*before* edge optimization, calibration + cross-vendor *before* sign-off.
+See `Makefile` for the full target list, including the `ingest-*` targets for the institutional
+DICOM pipeline (blocked on B5/B9) and `train-avf-cls` for the Model One classifier.
 
 ## Docs
-- [`docs/PROJECT_TRACKER.md`](docs/PROJECT_TRACKER.md) — **live status + checklist**: what's done, what's next, per-stage gates
-- [`docs/Model_Pipeline_Playbook.md`](docs/Model_Pipeline_Playbook.md) — rationale + model choices
-- [`docs/DATASETS.md`](docs/DATASETS.md) — what to download, links, usage
-- [`docs/DATASET_VALIDATION.md`](docs/DATASET_VALIDATION.md) — fact-check of dataset claims
-- [`docs/COLAB_MAC_SPLIT.md`](docs/COLAB_MAC_SPLIT.md) — build↔deploy runbook
-- [`docs/HOSTING_QUESTIONNAIRE.md`](docs/HOSTING_QUESTIONNAIRE.md) — hosting decisions, simple→advanced
-- [`notebooks/README.md`](notebooks/README.md) — the .py-library / .ipynb-runner split
+
+- [`docs/PROJECT_TRACKER.md`](docs/PROJECT_TRACKER.md) — **live status + checklist**: what's done,
+  what's next, per-workstream gates. Start here.
+- [`docs/Dialygo_Orientation_and_Requirements.md`](docs/Dialygo_Orientation_and_Requirements.md) —
+  the binding B1–B9 clinical/technical requirements for Model One.
+- [`docs/INTENDED_USE.md`](docs/INTENDED_USE.md) — intended-use statement and regulatory posture
+  (drafted, not yet clinically signed off).
+- [`docs/Model_Pipeline_Playbook.md`](docs/Model_Pipeline_Playbook.md) — model-selection rationale
+  for the coronary research track (predates the Dialygo pivot; some picks and floors are stale —
+  cross-check against `configs/` and the tracker).
+- [`docs/DATASETS.md`](docs/DATASETS.md) — datasets used, download links, how each is used.
+- [`notebooks/README.md`](notebooks/README.md) — the `.py`-library / `.ipynb`-runner split, and
+  which notebooks currently run vs. import a deleted module.
 
 ## Status
-Runnable scaffold: metrics, calibration, edge benchmark, TinyU-Net, distillation loop, CoreML/ONNX
-export, clDice gate, YOLO train + ByteTrack, serve loop, and prep converters (ARCADE/DCA1/Danilov/
-CathAction) are implemented. Dataset-format edge cases and later stages (DSA sequences, SAM adapter,
-AVF audio) are marked with TODOs. Not a medical device; research use, not for clinical care.
+
+Not a medical device. Research use only, not for clinical care. No model output in this repo may
+inform an actual patient's care until the preconditions in `docs/INTENDED_USE.md` §9 are met.

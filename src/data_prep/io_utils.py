@@ -454,13 +454,22 @@ def _split_stems(out_dir, split):
             (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")}
 
 
-# SSL rounds inject frames named 'gd_<stem>' / 'pl_<stem>' into images/train. Strip the prefix
-# before grouping so a self-labeled copy of a VAL patient (gd_14_002_5_0016) still collides with
-# that patient in val — otherwise the prefix hides the re-leak from the auditor.
+# SSL rounds inject frames named 'gd_<stem>' / 'pl_<stem>' into images/train; balance.apply_balance
+# duplicates a train frame as 'bal_<n>_<stem>' (n a per-original counter -- variable width, so it
+# cannot sit in _SSL_PREFIXES as a fixed-length literal like gd_/pl_; _BAL_RE strips it instead).
+# Strip these before grouping so a self-labeled/duplicated copy of a VAL patient (gd_14_002_5_0016,
+# bal_0_14_002_5_0016) still collides with that patient in val -- otherwise the prefix hides the
+# re-leak from the auditor. For bal_ this also matters with NO leak in play: unstripped, every
+# balance duplicate would group as itself (a singleton), inflating train_groups/val_frac_by_group
+# if the audit is ever re-run post-balance as a sanity check.
 _SSL_PREFIXES = ("gd_", "pl_")
+_BAL_RE = re.compile(r"^bal_\d+_")
 
 
 def _audit_group(stem):
+    m = _BAL_RE.match(stem)
+    if m:
+        stem = stem[m.end():]
     for p in _SSL_PREFIXES:
         if stem.startswith(p):
             stem = stem[len(p):]

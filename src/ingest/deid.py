@@ -156,6 +156,30 @@ def write_crosswalk(path, mapping):
     return path
 
 
+def read_crosswalk(path):
+    """Read a crosswalk CSV back into {real_id: pseudo_id}. Missing file -> {}.
+
+    The inverse of write_crosswalk, and the reason the driver can delete its plaintext scratch
+    log after every run: the 0600 CSV is the single accumulated store, so a later handover batch
+    reloads the earlier batches' mapping from the one file that is actually protected instead of
+    from a second, unprotected copy kept alive purely for resume.
+
+    Rows that are short or malformed are skipped rather than raising -- losing one row costs one
+    re-derivable mapping, whereas raising loses the whole crosswalk.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+    mapping = {}
+    with open(path, newline="", encoding="utf-8") as fh:
+        for i, row in enumerate(csv.reader(fh)):
+            if i == 0 and row[:2] == ["real_id", "pseudo_id"]:
+                continue
+            if len(row) >= 2 and row[0] and row[1]:
+                mapping[row[0]] = row[1]
+    return mapping
+
+
 def salt_fingerprint(salt):
     """A short public identifier for a salt: HMAC of a fixed label under the salt itself.
 
@@ -203,9 +227,14 @@ def main():
 #: PS3.15 Annex E "Z" action: the element stays, its value is emptied. Emptying rather than
 #: deleting keeps the dataset conformant and makes the absence explicit to a downstream reader.
 #: Times are emptied outright -- a time of day is no clinical use here and is a re-identification
-#: handle when combined with a hospital schedule. StudyDescription is emptied because in practice
-#: it carries patient names typed in at booking. PatientID is NOT here: it is replaced with the
-#: pseudonym so the de-identified file stays self-describing.
+#: handle when combined with a hospital schedule. StudyDescription and SeriesDescription are
+#: emptied because in practice they carry patient names typed in at booking and at the cath-lab
+#: console -- both are free text a human types under time pressure, and "AVF RUN 3 REDDY" is a
+#: routine value. SeriesDescription used to sit in KEEP_TAGS while phi_audit.md told the human
+#: reviewer it was scrubbed; resolved towards the stronger claim, since nothing downstream reads
+#: it (Modality/Manufacturer/geometry carry the acquisition metadata the models use).
+#: PatientID is NOT here: it is replaced with the pseudonym so the de-identified file stays
+#: self-describing.
 REMOVE_TAGS = (
     "PatientName", "PatientBirthDate", "PatientAddress", "PatientTelephoneNumbers",
     "OtherPatientIDs", "OtherPatientNames", "PatientBirthName", "PatientMotherBirthName",
@@ -214,7 +243,8 @@ REMOVE_TAGS = (
     "ReferringPhysicianName", "ReferringPhysicianTelephoneNumbers",
     "PerformingPhysicianName", "NameOfPhysiciansReadingStudy", "PhysiciansOfRecord",
     "RequestingPhysician", "OperatorsName",
-    "StudyDescription", "AdmissionID", "PatientComments", "ImageComments",
+    "StudyDescription", "SeriesDescription",
+    "AdmissionID", "PatientComments", "ImageComments",
     "DeviceSerialNumber", "StationName",
     "StudyTime", "SeriesTime", "AcquisitionTime", "ContentTime",
     # added per audit P0.8
@@ -226,7 +256,7 @@ REMOVE_TAGS = (
 #: is not patient identity, and leave-one-site-out external validation cannot be run without it.
 KEEP_TAGS = (
     "Modality", "Manufacturer", "ManufacturerModelName",
-    "PatientSex", "SeriesDescription",
+    "PatientSex",
     "KVP", "ExposureTime", "DistanceSourceToDetector", "DistanceSourceToPatient",
     "PositionerPrimaryAngle", "ImagerPixelSpacing", "CineRate", "FrameTime",
     "Rows", "Columns", "NumberOfFrames", "BitsAllocated", "BitsStored",

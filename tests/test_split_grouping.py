@@ -128,6 +128,35 @@ def test_audit_catches_ssl_prefixed_val_patient_releaked_into_train(tmp_path):
         audit_split_leakage(tmp)
 
 
+def test_audit_folds_bal_duplicates_back_into_their_source_group(tmp_path):
+    # balance.apply_balance duplicates a train frame as 'bal_<n>_<orig>' (n a counter). Without
+    # stripping that prefix before grouping, each duplicate defeats every group_key regex (the
+    # leading 'bal_<n>_' breaks e.g. _CADICA_RE's anchored 'p\\d+_v\\d+_...') and becomes its own
+    # singleton group -- empirically, 20 'bal_0_p2_v2_*' duplicates turned train_groups from 4 to
+    # 24. A duplicate must fold back into the SAME group as the original it was copied from.
+    train = ([f"p1_v1_{i:05d}" for i in range(5)]
+             + [f"p2_v2_{i:05d}" for i in range(5)]
+             + [f"bal_{i}_p2_v2_{i:05d}" for i in range(20)])   # 20 balance duplicates of p2 frames
+    val = ["p3_v1_00000"]
+    tmp = _write_split(str(tmp_path), train_stems=train, val_stems=val)
+
+    rep = audit_split_leakage(tmp)
+
+    # only p1 and p2 appear in train -> 2 groups, NOT 2 + 20 singleton bal_ groups.
+    assert rep["train_groups"] == 2
+
+
+def test_audit_catches_bal_prefixed_val_patient_releaked_into_train(tmp_path):
+    # Mirrors the gd_/pl_ guarantee above: a 'bal_' duplicate of a VAL patient's frame that ends up
+    # in train (e.g. balanced against the wrong split root) must still collide with that patient in
+    # val -- stripping 'bal_<n>_' must not mask a real leak.
+    val = [f"p2_v1_{i:05d}" for i in range(10)]
+    train = [f"p1_v1_{i:05d}" for i in range(8)] + ["bal_0_p2_v1_00003"]   # leaked val patient, dup'd
+    tmp = _write_split(str(tmp_path), train_stems=train, val_stems=val)
+    with pytest.raises(AssertionError, match="span BOTH"):
+        audit_split_leakage(tmp)
+
+
 def test_audit_raises_when_danilov_names_defeat_group_key(tmp_path):
     # Real files named unlike '<site>_<patient>_<seq>_<frame>' -> group_key can't collapse them
     # -> silent per-frame split. The auditor must catch this via the independent danilov_stems set.

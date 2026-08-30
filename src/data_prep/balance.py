@@ -3,9 +3,11 @@
 ARCADE / CADICA / Danilov are pooled into one images/train + labels/train tree in unequal
 amounts; if the deployment-target source is the minority it gets drowned out during training.
 This module equalizes per-source frame counts by DUPLICATING minority-source frames (image +
-label) under a ``bal_`` filename prefix. Duplicates are train->train only (val is never touched),
-so they cannot leak across the split. The leakage auditor is taught to strip the ``bal_`` prefix
-separately -- not this module's job.
+label) under a ``bal_<n>_`` filename prefix (``n`` a per-original counter). Duplicates are
+train->train only (val is never touched), so they cannot leak across the split. The leakage
+auditor (``io_utils._audit_group``) strips the ``bal_<n>_`` prefix via regex before grouping, so
+a duplicate folds back into its original's patient/clip group instead of counting as a new
+singleton group -- not this module's job.
 
 Stdlib-only (shutil/os/glob): no cv2, no torch -- repo invariant is src/* must import without
 either installed. balance_plan() is pure (no filesystem) so it is trivially unit-testable;
